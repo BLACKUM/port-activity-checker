@@ -14,7 +14,8 @@ def load_config():
         "container_name": "",
         "target_ports": [],
         "webhook_url": "",
-        "check_interval": 5
+        "check_interval": 5,
+        "debug": False
     }
     
     if not os.path.exists(CONFIG_FILE):
@@ -67,11 +68,10 @@ def send_discord_webhook(url, message, color=0x00ff00):
 
 import subprocess
 
-def check_docker_connections(container_name, target_ports):
+def check_docker_connections(container_name, target_ports, debug=False):
     target_active = False
     
     try:
-        
         cmd = f"docker exec {container_name} netstat -tunap"
         output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode('utf-8')
         
@@ -85,12 +85,17 @@ def check_docker_connections(container_name, target_ports):
                 
             remote_addr = parts[4]
             
+            if debug:
+                 print(f"[DEBUG] Found ESTABLISHED connection: {remote_addr}")
+            
             for port in target_ports:
                 if f":{port}" in remote_addr:
                     target_active = True
                     break
             
             if target_active:
+                if debug:
+                    print(f"[DEBUG] MATCHED Target Port! Active.")
                 break
                 
     except subprocess.CalledProcessError as e:
@@ -128,6 +133,7 @@ def main():
     target_ports = config["target_ports"]
     webhook_url = config["webhook_url"]
     interval = config.get("check_interval", 5)
+    debug = config.get("debug", False)
     
     if container_name:
         print(f"Monitoring Docker Container: {container_name}")
@@ -135,13 +141,15 @@ def main():
         print(f"Monitoring SOCKS port: {socks_port} (Host Mode)")
         
     print(f"Target ports: {target_ports}")
+    if debug:
+        print("Debug mode enabled: Printing all established connections found.")
     
     last_status = "disconnected"
     
     try:
         while True:
             if container_name:
-                target_active = check_docker_connections(container_name, target_ports)
+                target_active = check_docker_connections(container_name, target_ports, debug)
             else:
                 _, target_active = check_connections(socks_port, target_ports)
             

@@ -1,6 +1,8 @@
 {
     "socks_port": null,
+    "container_name": "",
     "target_ports": [],
     "webhook_url": "",
-    "check_interval": 5
+    "check_interval": 5,
+    "debug": false
 }

@@ -69,3 +69,8 @@ To keep it running in the background after you disconnect from SSH, use `tmux`:
     ```bash
     tmux attach -t monitor
     ```
+
+5.  **All in one command**:
+    ```bash
+    tmux new -s monitor "cd /root/port-activity-checker && source venv/bin/activate && python monitor.py"
+    ```
