@@ -50,16 +50,23 @@ def load_config():
         print(f"Error loading config: {e}")
         sys.exit(1)
 
-def send_discord_webhook(url, message, color=0x00ff00):
-    data = {
-        "embeds": [
-            {
-                "description": message,
-                "color": color,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-        ]
+def send_discord_webhook(url, title, description, fields=[], color=0x00ff00):
+    embed = {
+        "title": title,
+        "description": description,
+        "color": color,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "fields": fields
     }
+    
+    data = {
+        "embeds": [embed]
+    }
+    try:
+        response = requests.post(url, json=data)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"Failed to send webhook: {e}")
     try:
         response = requests.post(url, json=data)
         response.raise_for_status()
@@ -68,14 +75,22 @@ def send_discord_webhook(url, message, color=0x00ff00):
 
 import subprocess
 
-def check_docker_connections(container_name, target_ports, debug=False):
-    found_ports = []
-    
+def get_docker_netstat_output(container_name):
     try:
         cmd = f"docker exec {container_name} netstat -tunap"
         output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode('utf-8')
+        return output.splitlines()
+    except Exception:
+        return []
+
+def check_docker_connections(container_name, target_ports, socks_port=None, debug=False):
+    found_connections = []
+    active_clients = []
+    
+    try:
+        lines = get_docker_netstat_output(container_name)
         
-        for line in output.splitlines():
+        for line in lines:
             parts = line.split()
             if len(parts) < 5:
                 continue
@@ -83,66 +98,88 @@ def check_docker_connections(container_name, target_ports, debug=False):
             if 'ESTABLISHED' not in line:
                 continue
                 
+            local_addr = parts[3]
             remote_addr = parts[4]
             
+            if socks_port:
+                 try:
+                     l_port = int(local_addr.split(":")[-1])
+                     if l_port == int(socks_port):
+                         if remote_addr not in active_clients:
+                             active_clients.append(remote_addr)
+                 except: pass
+
             if debug:
-                 print(f"[DEBUG] Found ESTABLISHED connection: {remote_addr}")
-            
+                 print(f"[DEBUG] Found ESTABLISHED: Local={local_addr} Remote={remote_addr}")
+
             try:
                 port_str = remote_addr.split(":")[-1]
                 current_port = int(port_str)
             except ValueError:
                 continue
 
+            is_match = False
             if "*" in target_ports:
                  if not remote_addr.startswith("127.0.0.1") and not remote_addr.startswith("::1"):
-                     if current_port not in found_ports:
-                        found_ports.append(current_port)
-                     if debug:
-                         print(f"[DEBUG] Wildcard Match! Port: {current_port}")
-            
+                     is_match = True
             else:
                 for port in target_ports:
                     if port == "*": continue
                     if int(port) == current_port:
-                         if current_port not in found_ports:
-                            found_ports.append(current_port)
+                         is_match = True
                          break
             
-            if found_ports:
-                if debug:
-                    print(f"[DEBUG] MATCHED Ports: {found_ports}")
-                
-    except subprocess.CalledProcessError as e:
-        print(f"Error running docker command: {e.output.decode('utf-8')}")
+            if is_match:
+                conn_details = {
+                    "remote": remote_addr,
+                    "local": local_addr,
+                    "port": current_port
+                }
+                if conn_details not in found_connections:
+                    found_connections.append(conn_details)
+                    if debug:
+                        print(f"[DEBUG] Match! {conn_details}")
+
     except Exception as e:
         print(f"Docker check failed: {e}")
         
-    return found_ports
+    return found_connections, active_clients
 
 def check_connections(socks_port, target_ports):
-    socks_active = False
-    found_ports = []
+    found_connections = []
+    active_clients = []
     
     try:
         connections = psutil.net_connections(kind='inet')
         for conn in connections:
             if conn.status == psutil.CONN_ESTABLISHED:
-                if conn.laddr.port == socks_port:
-                    socks_active = True
-                if conn.raddr:
+                l_ip, l_port = conn.laddr.ip, conn.laddr.port
+                r_ip, r_port = (conn.raddr.ip, conn.raddr.port) if conn.raddr else (None, None)
+                
+                if l_port == socks_port and r_ip:
+                     client = f"{r_ip}:{r_port}"
+                     if client not in active_clients:
+                         active_clients.append(client)
+                
+                if r_port:
+                    is_match = False
                     if "*" in target_ports:
-                        if conn.raddr.ip != "127.0.0.1" and conn.raddr.ip != "::1":
-                             if conn.raddr.port not in found_ports:
-                                 found_ports.append(conn.raddr.port)
-                    elif conn.raddr.port in target_ports:
-                         if conn.raddr.port not in found_ports:
-                             found_ports.append(conn.raddr.port)
+                         if r_ip != "127.0.0.1" and r_ip != "::1":
+                             is_match = True
+                    elif r_port in target_ports:
+                         is_match = True
                     
+                    if is_match:
+                        found_connections.append({
+                            "remote": f"{r_ip}:{r_port}",
+                            "local": f"{l_ip}:{l_port}",
+                            "port": r_port
+                        })
+
     except (psutil.AccessDenied, psutil.NoSuchProcess):
         pass
         
-    return socks_active, found_ports
+    return found_connections, active_clients
 
 def main():
     print("Starting SOCKS5 Monitor...")
@@ -179,24 +216,43 @@ def main():
     try:
         while True:
             if container_name:
-                active_ports = check_docker_connections(container_name, target_ports, debug)
-                target_active = len(active_ports) > 0
+                active_connections, active_clients = check_docker_connections(container_name, target_ports, socks_port, debug)
             else:
-                _, active_ports = check_connections(socks_port, target_ports)
-                target_active = len(active_ports) > 0
+                active_connections, active_clients = check_connections(socks_port, target_ports)
+            
+            target_active = len(active_connections) > 0
             
             current_status = "connected" if target_active else "disconnected"
             
             if current_status != last_status:
                 if current_status == "connected":
-                    ports_str = ", ".join(map(str, active_ports))
-                    msg = f"🟢 **Connected** to Target Server (Port: {ports_str})"
-                    print(msg)
-                    send_discord_webhook(webhook_url, msg, 0x00ff00) # Green
+                    ports_str = ", ".join([str(c['port']) for c in active_connections])
+                    
+                    fields = []
+                    for i, conn in enumerate(active_connections[:5]):
+                        fields.append({
+                            "name": f"🌍 Target Connection #{i+1}",
+                            "value": f"**IP**: `{conn['remote']}`\n**Port**: `{conn['port']}`",
+                            "inline": True
+                        })
+                    
+                    if active_clients:
+                        client_list = "\n".join([f"`{c}`" for c in active_clients[:5]])
+                    else:
+                        client_list = "No direct SOCKS clients found or unknown."
+                        
+                    fields.append({
+                        "name": "👤 Proxy Client",
+                        "value": client_list,
+                        "inline": False
+                    })
+                    
+                    msg = f"Detected traffic to **{ports_str}**"
+                    print(f"🟢 Connected: {ports_str} | Clients: {active_clients}")
+                    send_discord_webhook(webhook_url, "🟢 Connection Established", msg, fields, 0x00ff00)
                 else:
-                    msg = "🔴 **Disconnected** from Target Server"
-                    print(msg)
-                    send_discord_webhook(webhook_url, msg, 0xff0000) # Red
+                    print("🔴 Disconnected")
+                    send_discord_webhook(webhook_url, "🔴 Disconnected", "Traffic to target has stopped.", [], 0xff0000)
                 
                 last_status = current_status
             
