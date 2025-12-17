@@ -6,11 +6,18 @@ A Python script to monitor network connections on a VPS. It detects when a clien
 
 1.  **Clone the repository**:
     ```bash
-    git clone <your-repo-url>
+    git clone https://github.com/BLACKUM/port-activity-checker
     cd port-activity-checker
     ```
 
-2.  **Install dependencies**:
+2.  **Create and activate a virtual environment**:
+    *(Required on newer Linux systems to avoid "externally-managed-environment" errors)*
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
+
+3.  **Install dependencies**:
     ```bash
     pip install -r requirements.txt
     ```
@@ -28,6 +35,7 @@ A Python script to monitor network connections on a VPS. It detects when a clien
     ```json
     {
         "socks_port": 1234,          // The port your SOCKS5 proxy listens on
+        "container_name": "CONTAINER_NAME", // OPTIONAL: Docker container name if proxy is running in Docker
         "target_ports": [1234],      // The target server port
         "webhook_url": "YOUR_WEBHOOK_URL", // Your Discord Webhook URL
         "check_interval": 5           // How often to check (in seconds)

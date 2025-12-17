@@ -11,6 +11,7 @@ CONFIG_FILE = 'config.json'
 def load_config():
     default_config = {
         "socks_port": None,
+        "container_name": "",
         "target_ports": [],
         "webhook_url": "",
         "check_interval": 5
@@ -64,6 +65,41 @@ def send_discord_webhook(url, message, color=0x00ff00):
     except Exception as e:
         print(f"Failed to send webhook: {e}")
 
+import subprocess
+
+def check_docker_connections(container_name, target_ports):
+    target_active = False
+    
+    try:
+        
+        cmd = f"docker exec {container_name} netstat -tunap"
+        output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode('utf-8')
+        
+        for line in output.splitlines():
+            parts = line.split()
+            if len(parts) < 5:
+                continue
+            
+            if 'ESTABLISHED' not in line:
+                continue
+                
+            remote_addr = parts[4]
+            
+            for port in target_ports:
+                if f":{port}" in remote_addr:
+                    target_active = True
+                    break
+            
+            if target_active:
+                break
+                
+    except subprocess.CalledProcessError as e:
+        print(f"Error running docker command: {e.output.decode('utf-8')}")
+    except Exception as e:
+        print(f"Docker check failed: {e}")
+        
+    return target_active
+
 def check_connections(socks_port, target_ports):
     socks_active = False
     target_active = False
@@ -88,18 +124,26 @@ def main():
     config = load_config()
     
     socks_port = config["socks_port"]
+    container_name = config.get("container_name", "")
     target_ports = config["target_ports"]
     webhook_url = config["webhook_url"]
     interval = config.get("check_interval", 5)
     
-    print(f"Monitoring SOCKS port: {socks_port}")
+    if container_name:
+        print(f"Monitoring Docker Container: {container_name}")
+    else:
+        print(f"Monitoring SOCKS port: {socks_port} (Host Mode)")
+        
     print(f"Target ports: {target_ports}")
     
     last_status = "disconnected"
     
     try:
         while True:
-            socks_active, target_active = check_connections(socks_port, target_ports)
+            if container_name:
+                target_active = check_docker_connections(container_name, target_ports)
+            else:
+                _, target_active = check_connections(socks_port, target_ports)
             
             current_status = "connected" if target_active else "disconnected"
             
