@@ -32,8 +32,8 @@ def load_config():
         with open(CONFIG_FILE, 'r') as f:
             config = json.load(f)
             
-        if not config.get("socks_port"):
-            print(f"Error: 'socks_port' is not set in {CONFIG_FILE}.")
+        if config.get("socks_port") is None:
+            print(f"Error: 'socks_port' is not set or null in {CONFIG_FILE}.")
             sys.exit(1)
         if not config.get("target_ports"):
              print(f"Error: 'target_ports' is empty in {CONFIG_FILE}.")
@@ -85,33 +85,53 @@ def check_docker_connections(container_name, target_ports, socks_port=None, debu
     try:
         lines = get_docker_netstat_output(container_name)
         
+        if socks_port:
+            for line in lines:
+                parts = line.split()
+                if len(parts) < 5 or 'ESTABLISHED' not in line:
+                    continue
+                
+                local_addr = parts[3]
+                remote_addr = parts[4]
+                
+                try:
+                    l_port = int(local_addr.split(":")[-1])
+                    if l_port == int(socks_port):
+                        if remote_addr not in active_clients:
+                            active_clients.append(remote_addr)
+                except: pass
+
         for line in lines:
             parts = line.split()
-            if len(parts) < 5:
-                continue
-            
-            if 'ESTABLISHED' not in line:
+            if len(parts) < 5 or 'ESTABLISHED' not in line:
                 continue
                 
             local_addr = parts[3]
             remote_addr = parts[4]
             
-            is_incoming = False
+            is_client = False
+            if remote_addr in active_clients:
+                is_client = True
+            
             if socks_port:
                  try:
-                     l_port = int(local_addr.split(":")[-1])
-                     if l_port == int(socks_port):
-                         is_incoming = True
-                         if remote_addr not in active_clients:
-                             active_clients.append(remote_addr)
+                    l_port = int(local_addr.split(":")[-1])
+                    if l_port == int(socks_port):
+                        is_client = True
                  except: pass
-
-            if is_incoming:
+            if socks_port:
+                 try:
+                    l_port = int(local_addr.split(":")[-1])
+                    if l_port == int(socks_port):
+                        is_client = True
+                 except: pass
+            
+            if is_client:
                 continue
 
             if debug:
-                 print(f"[DEBUG] Found ESTABLISHED: Local={local_addr} Remote={remote_addr}")
-
+                 print(f"[DEBUG] Checking Candidate: Local={local_addr} Remote={remote_addr}")
+            
             try:
                 port_str = remote_addr.split(":")[-1]
                 current_port = int(port_str)
@@ -142,6 +162,7 @@ def check_docker_connections(container_name, target_ports, socks_port=None, debu
 
     except Exception as e:
         print(f"Docker check failed: {e}")
+        return None, None
         
     return found_connections, active_clients
 
@@ -216,7 +237,11 @@ def main():
     try:
         while True:
             if container_name:
-                active_connections, active_clients = check_docker_connections(container_name, target_ports, socks_port, debug)
+                result = check_docker_connections(container_name, target_ports, socks_port, debug)
+                if result[0] is None:
+                    time.sleep(1)
+                    continue
+                active_connections, active_clients = result
             else:
                 active_connections, active_clients = check_connections(socks_port, target_ports)
             
