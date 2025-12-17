@@ -233,6 +233,7 @@ def main():
             print(f"Failed to list initial connections: {e}")
 
     last_status = "disconnected"
+    connection_start_time = None
     
     try:
         while True:
@@ -251,6 +252,8 @@ def main():
             
             if current_status != last_status:
                 if current_status == "connected":
+                    connection_start_time = datetime.now()
+                    
                     ports_str = ", ".join([str(c['port']) for c in active_connections])
                     
                     fields = []
@@ -276,8 +279,16 @@ def main():
                     print(f"🟢 Connected: {ports_str} | Clients: {active_clients}")
                     send_discord_webhook(webhook_url, "🟢 Connection Established", msg, fields, 0x00ff00)
                 else:
-                    print("🔴 Disconnected")
-                    send_discord_webhook(webhook_url, "🔴 Disconnected", "Traffic to target has stopped.", [], 0xff0000)
+                    duration_str = "Unknown"
+                    if connection_start_time:
+                        duration = datetime.now() - connection_start_time
+                        hours, remainder = divmod(duration.seconds, 3600)
+                        minutes, seconds = divmod(remainder, 60)
+                        duration_str = f"{hours}h {minutes}m {seconds}s"
+                    
+                    print(f"🔴 Disconnected. Duration: {duration_str}")
+                    send_discord_webhook(webhook_url, "🔴 Disconnected", f"Traffic to target has stopped.\n**Duration**: `{duration_str}`", [], 0xff0000)
+                    connection_start_time = None
                 
                 last_status = current_status
             
