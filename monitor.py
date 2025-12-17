@@ -67,11 +67,6 @@ def send_discord_webhook(url, title, description, fields=[], color=0x00ff00):
         response.raise_for_status()
     except Exception as e:
         print(f"Failed to send webhook: {e}")
-    try:
-        response = requests.post(url, json=data)
-        response.raise_for_status()
-    except Exception as e:
-        print(f"Failed to send webhook: {e}")
 
 import subprocess
 
@@ -101,13 +96,18 @@ def check_docker_connections(container_name, target_ports, socks_port=None, debu
             local_addr = parts[3]
             remote_addr = parts[4]
             
+            is_incoming = False
             if socks_port:
                  try:
                      l_port = int(local_addr.split(":")[-1])
                      if l_port == int(socks_port):
+                         is_incoming = True
                          if remote_addr not in active_clients:
                              active_clients.append(remote_addr)
                  except: pass
+
+            if is_incoming:
+                continue
 
             if debug:
                  print(f"[DEBUG] Found ESTABLISHED: Local={local_addr} Remote={remote_addr}")
