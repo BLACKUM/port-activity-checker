@@ -4,7 +4,7 @@ import time
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 CONFIG_FILE = 'config.json'
 
@@ -36,8 +36,8 @@ def load_config():
             print(f"Error: 'socks_port' is not set in {CONFIG_FILE}.")
             sys.exit(1)
         if not config.get("target_ports"):
-            print(f"Error: 'target_ports' is empty in {CONFIG_FILE}.")
-            sys.exit(1)
+             print(f"Error: 'target_ports' is empty in {CONFIG_FILE}.")
+             sys.exit(1)
         if not config.get("webhook_url"):
             print(f"Error: 'webhook_url' is not set in {CONFIG_FILE}.")
             sys.exit(1)
@@ -56,7 +56,7 @@ def send_discord_webhook(url, message, color=0x00ff00):
             {
                 "description": message,
                 "color": color,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
         ]
     }
@@ -88,7 +88,19 @@ def check_docker_connections(container_name, target_ports, debug=False):
             if debug:
                  print(f"[DEBUG] Found ESTABLISHED connection: {remote_addr}")
             
+            # Check for wildcard
+            if "*" in target_ports:
+                 # Filter out local/internal connections if needed, though netstat inside container usually shows relevant traffic
+                 # Common internal IPs: 127.0.0.1, ::1
+                 # But in simple SOCKS proxy containers, valid traffic is usually external.
+                 if not remote_addr.startswith("127.0.0.1") and not remote_addr.startswith("::1"):
+                     target_active = True
+                     if debug:
+                         print(f"[DEBUG] Wildcard Match! Active.")
+                     break
+            
             for port in target_ports:
+                if port == "*": continue
                 if f":{port}" in remote_addr:
                     target_active = True
                     break
@@ -115,9 +127,13 @@ def check_connections(socks_port, target_ports):
             if conn.status == psutil.CONN_ESTABLISHED:
                 if conn.laddr.port == socks_port:
                     socks_active = True
-                
-                if conn.raddr and conn.raddr.port in target_ports:
-                    target_active = True
+                if conn.raddr:
+                    if "*" in target_ports:
+                        # For host mode, filter out localhost
+                        if conn.raddr.ip != "127.0.0.1" and conn.raddr.ip != "::1":
+                             target_active = True
+                    elif conn.raddr.port in target_ports:
+                        target_active = True
                     
     except (psutil.AccessDenied, psutil.NoSuchProcess):
         pass

@@ -36,9 +36,10 @@ A Python script to monitor network connections on a VPS. It detects when a clien
     {
         "socks_port": 1234,          // The port your SOCKS5 proxy listens on
         "container_name": "CONTAINER_NAME", // OPTIONAL: Docker container name if proxy is running in Docker
-        "target_ports": [1234],      // The target server port
+        "target_ports": [1234, "*"], // The target server port OR "*" for ANY port
         "webhook_url": "YOUR_WEBHOOK_URL", // Your Discord Webhook URL
-        "check_interval": 5           // How often to check (in seconds)
+        "check_interval": 5,          // How often to check (in seconds)
+        "debug": true                 // Set to true to see connections in log
     }
     ```
 
