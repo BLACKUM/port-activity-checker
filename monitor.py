@@ -69,7 +69,7 @@ def send_discord_webhook(url, message, color=0x00ff00):
 import subprocess
 
 def check_docker_connections(container_name, target_ports, debug=False):
-    target_active = False
+    found_ports = []
     
     try:
         cmd = f"docker exec {container_name} netstat -tunap"
@@ -88,38 +88,41 @@ def check_docker_connections(container_name, target_ports, debug=False):
             if debug:
                  print(f"[DEBUG] Found ESTABLISHED connection: {remote_addr}")
             
-            # Check for wildcard
+            try:
+                port_str = remote_addr.split(":")[-1]
+                current_port = int(port_str)
+            except ValueError:
+                continue
+
             if "*" in target_ports:
-                 # Filter out local/internal connections if needed, though netstat inside container usually shows relevant traffic
-                 # Common internal IPs: 127.0.0.1, ::1
-                 # But in simple SOCKS proxy containers, valid traffic is usually external.
                  if not remote_addr.startswith("127.0.0.1") and not remote_addr.startswith("::1"):
-                     target_active = True
+                     if current_port not in found_ports:
+                        found_ports.append(current_port)
                      if debug:
-                         print(f"[DEBUG] Wildcard Match! Active.")
-                     break
+                         print(f"[DEBUG] Wildcard Match! Port: {current_port}")
             
-            for port in target_ports:
-                if port == "*": continue
-                if f":{port}" in remote_addr:
-                    target_active = True
-                    break
+            else:
+                for port in target_ports:
+                    if port == "*": continue
+                    if int(port) == current_port:
+                         if current_port not in found_ports:
+                            found_ports.append(current_port)
+                         break
             
-            if target_active:
+            if found_ports:
                 if debug:
-                    print(f"[DEBUG] MATCHED Target Port! Active.")
-                break
+                    print(f"[DEBUG] MATCHED Ports: {found_ports}")
                 
     except subprocess.CalledProcessError as e:
         print(f"Error running docker command: {e.output.decode('utf-8')}")
     except Exception as e:
         print(f"Docker check failed: {e}")
         
-    return target_active
+    return found_ports
 
 def check_connections(socks_port, target_ports):
     socks_active = False
-    target_active = False
+    found_ports = []
     
     try:
         connections = psutil.net_connections(kind='inet')
@@ -129,16 +132,17 @@ def check_connections(socks_port, target_ports):
                     socks_active = True
                 if conn.raddr:
                     if "*" in target_ports:
-                        # For host mode, filter out localhost
                         if conn.raddr.ip != "127.0.0.1" and conn.raddr.ip != "::1":
-                             target_active = True
+                             if conn.raddr.port not in found_ports:
+                                 found_ports.append(conn.raddr.port)
                     elif conn.raddr.port in target_ports:
-                        target_active = True
+                         if conn.raddr.port not in found_ports:
+                             found_ports.append(conn.raddr.port)
                     
     except (psutil.AccessDenied, psutil.NoSuchProcess):
         pass
         
-    return socks_active, target_active
+    return socks_active, found_ports
 
 def main():
     print("Starting SOCKS5 Monitor...")
@@ -160,20 +164,33 @@ def main():
     if debug:
         print("Debug mode enabled: Printing all established connections found.")
     
+    if container_name:
+        print(f"\n[INFO] Current connections in container '{container_name}':")
+        try:
+            cmd = f"docker exec {container_name} netstat -tunap"
+            output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode('utf-8')
+            print(output)
+            print("-" * 50)
+        except Exception as e:
+            print(f"Failed to list initial connections: {e}")
+
     last_status = "disconnected"
     
     try:
         while True:
             if container_name:
-                target_active = check_docker_connections(container_name, target_ports, debug)
+                active_ports = check_docker_connections(container_name, target_ports, debug)
+                target_active = len(active_ports) > 0
             else:
-                _, target_active = check_connections(socks_port, target_ports)
+                _, active_ports = check_connections(socks_port, target_ports)
+                target_active = len(active_ports) > 0
             
             current_status = "connected" if target_active else "disconnected"
             
             if current_status != last_status:
                 if current_status == "connected":
-                    msg = f"🟢 **Connected** to Target Server (Port: {target_ports})"
+                    ports_str = ", ".join(map(str, active_ports))
+                    msg = f"🟢 **Connected** to Target Server (Port: {ports_str})"
                     print(msg)
                     send_discord_webhook(webhook_url, msg, 0x00ff00) # Green
                 else:
