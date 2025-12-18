@@ -283,6 +283,8 @@ def main():
 
     stats_manager = StatsManager()
     client_sessions = {}
+    last_status = "disconnected"
+    connection_start_time = None
 
     try:
         while True:
