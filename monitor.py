@@ -68,6 +68,55 @@ def send_discord_webhook(url, title, description, fields=[], color=0x00ff00):
     except Exception as e:
         print(f"Failed to send webhook: {e}")
 
+STATS_FILE = 'stats.json'
+
+class StatsManager:
+    def __init__(self):
+        self.stats = self.load_stats()
+
+    def load_stats(self):
+        if not os.path.exists(STATS_FILE):
+            return {}
+        try:
+            with open(STATS_FILE, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def save_stats(self):
+        try:
+            with open(STATS_FILE, 'w') as f:
+                json.dump(self.stats, f, indent=4)
+        except Exception as e:
+            print(f"Error saving stats: {e}")
+
+    def update_client(self, ip, duration_seconds):
+        if ip not in self.stats:
+            self.stats[ip] = {
+                "total_duration": 0,
+                "connections": 0,
+                "first_seen": datetime.now(timezone.utc).isoformat(),
+                "last_seen": None
+            }
+        
+        self.stats[ip]["total_duration"] += duration_seconds
+        self.stats[ip]["connections"] += 1
+        self.stats[ip]["last_seen"] = datetime.now(timezone.utc).isoformat()
+        self.save_stats()
+
+    def get_leaderboard(self, limit=5):
+        sorted_clients = sorted(
+            self.stats.items(),
+            key=lambda item: item[1].get("total_duration", 0),
+            reverse=True
+        )
+        return sorted_clients[:limit]
+
+def get_formatted_duration(seconds):
+    hours, remainder = divmod(int(seconds), 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours}h {minutes}m {secs}s"
+
 import subprocess
 
 def get_docker_netstat_output(container_name):
@@ -232,9 +281,9 @@ def main():
         except Exception as e:
             print(f"Failed to list initial connections: {e}")
 
-    last_status = "disconnected"
-    connection_start_time = None
-    
+    stats_manager = StatsManager()
+    client_sessions = {}
+
     try:
         while True:
             if container_name:
@@ -245,7 +294,25 @@ def main():
                 active_connections, active_clients = result
             else:
                 active_connections, active_clients = check_connections(socks_port, target_ports)
+
+            current_clients = set(active_clients)
+            active_client_ips = set(client_sessions.keys())
             
+            new_clients = current_clients - active_client_ips
+            for client in new_clients:
+                ip = client.split(':')[0] if ':' in client else client
+                if client not in client_sessions:
+                     client_sessions[client] = datetime.now()
+            
+            left_clients = active_client_ips - current_clients
+            for client in left_clients:
+                start_time = client_sessions.pop(client)
+                duration = (datetime.now() - start_time).total_seconds()
+                ip = client.split(':')[0] if ':' in client else client
+                stats_manager.update_client(ip, duration)
+                if debug:
+                    print(f"[DEBUG] Client {client} disconnected. Duration: {duration}s")
+
             target_active = len(active_connections) > 0
             
             current_status = "connected" if target_active else "disconnected"
@@ -287,7 +354,23 @@ def main():
                         duration_str = f"{hours}h {minutes}m {seconds}s"
                     
                     print(f"🔴 Disconnected. Duration: {duration_str}")
-                    send_discord_webhook(webhook_url, "🔴 Disconnected", f"Traffic to target has stopped.\n**Duration**: `{duration_str}`", [], 0xff0000)
+                    leaderboard = stats_manager.get_leaderboard()
+                    fields = []
+                    
+                    if leaderboard:
+                        lb_text = ""
+                        for idx, (ip, data) in enumerate(leaderboard):
+                            dur = get_formatted_duration(data['total_duration'])
+                            conns = data.get('connections', 0)
+                            lb_text += f"**{idx+1}.** `{ip}` - ⏳ {dur} - {conns} times\n"
+                        
+                        fields.append({
+                            "name": "🏆 Top Clients (Total Time)",
+                            "value": lb_text,
+                            "inline": False
+                        })
+
+                    send_discord_webhook(webhook_url, "🔴 Disconnected", f"Traffic to target has stopped.\n**Duration**: `{duration_str}`", fields, 0xff0000)
                     connection_start_time = None
                 
                 last_status = current_status
