@@ -297,23 +297,25 @@ def main():
             else:
                 active_connections, active_clients = check_connections(socks_port, target_ports)
 
-            current_clients = set(active_clients)
-            active_client_ips = set(client_sessions.keys())
-            
-            new_clients = current_clients - active_client_ips
-            for client in new_clients:
+            current_client_ips = set()
+            for client in active_clients:
                 ip = client.split(':')[0] if ':' in client else client
-                if client not in client_sessions:
-                     client_sessions[client] = datetime.now()
+                current_client_ips.add(ip)
             
-            left_clients = active_client_ips - current_clients
-            for client in left_clients:
-                start_time = client_sessions.pop(client)
+            active_tracked_ips = set(client_sessions.keys())
+            
+            new_ips = current_client_ips - active_tracked_ips
+            for ip in new_ips:
+                client_sessions[ip] = datetime.now()
+
+            left_ips = active_tracked_ips - current_client_ips
+            for ip in left_ips:
+                start_time = client_sessions.pop(ip)
                 duration = (datetime.now() - start_time).total_seconds()
-                ip = client.split(':')[0] if ':' in client else client
                 stats_manager.update_client(ip, duration)
                 if debug:
-                    print(f"[DEBUG] Client {client} disconnected. Duration: {duration}s")
+                    print(f"[DEBUG] Client IP {ip} disconnected. Duration: {duration}s")
+
 
             target_active = len(active_connections) > 0
             
@@ -323,7 +325,8 @@ def main():
                 if current_status == "connected":
                     connection_start_time = datetime.now()
                     
-                    ports_str = ", ".join([str(c['port']) for c in active_connections])
+                    unique_ports = sorted(list(set([c['port'] for c in active_connections])))
+                    ports_str = ", ".join([str(p) for p in unique_ports])
                     
                     fields = []
                     for i, conn in enumerate(active_connections[:5]):
