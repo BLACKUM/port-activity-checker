@@ -283,11 +283,14 @@ def main():
 
     stats_manager = StatsManager()
     client_sessions = {}
+    pending_disconnects = {}
     last_status = "disconnected"
     connection_start_time = None
 
     try:
         while True:
+            loop_time = datetime.now()
+            
             if container_name:
                 result = check_docker_connections(container_name, target_ports, socks_port, debug)
                 if result[0] is None:
@@ -304,17 +307,33 @@ def main():
             
             active_tracked_ips = set(client_sessions.keys())
             
+            for ip in current_client_ips:
+                if ip in pending_disconnects:
+                    if debug: print(f"[DEBUG] Client {ip} recovered from pending disconnect.")
+                    del pending_disconnects[ip]
+
             new_ips = current_client_ips - active_tracked_ips
             for ip in new_ips:
-                client_sessions[ip] = datetime.now()
-
+                client_sessions[ip] = loop_time
+            
             left_ips = active_tracked_ips - current_client_ips
             for ip in left_ips:
-                start_time = client_sessions.pop(ip)
-                duration = (datetime.now() - start_time).total_seconds()
-                stats_manager.update_client(ip, duration)
-                if debug:
-                    print(f"[DEBUG] Client IP {ip} disconnected. Duration: {duration}s")
+                if ip not in pending_disconnects:
+                    pending_disconnects[ip] = loop_time
+            
+            grace_period = 20 # seconds
+            
+            for ip in list(pending_disconnects.keys()):
+                missing_since = pending_disconnects[ip]
+                if (loop_time - missing_since).total_seconds() > grace_period:
+                    start_time = client_sessions.pop(ip)
+                    del pending_disconnects[ip]
+                    
+                    duration = (missing_since - start_time).total_seconds()
+                    
+                    stats_manager.update_client(ip, duration)
+                    if debug:
+                        print(f"[DEBUG] Client IP {ip} disconnected (Confirmed). Duration: {duration}s")
 
 
             target_active = len(active_connections) > 0
@@ -384,6 +403,11 @@ def main():
             
     except KeyboardInterrupt:
         print("\nStopping monitor...")
+        print("Saving active sessions...")
+        for ip, start_time in client_sessions.items():
+            duration = (datetime.now() - start_time).total_seconds()
+            stats_manager.update_client(ip, duration)
+            print(f"Saved stats for {ip}")
 
 if __name__ == "__main__":
     main()
