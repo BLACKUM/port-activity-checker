@@ -87,6 +87,7 @@ class StatsManager:
         try:
             with open(STATS_FILE, 'w') as f:
                 json.dump(self.stats, f, indent=4)
+            print(f"[DEBUG] Stats saved to {STATS_FILE}")
         except Exception as e:
             print(f"Error saving stats: {e}")
 
@@ -100,6 +101,7 @@ class StatsManager:
         
         self.stats[ip]["total_duration"] += duration_seconds
         self.stats[ip]["last_seen"] = datetime.now(timezone.utc).isoformat()
+        print(f"[DEBUG] Updated stats for {ip}. Added {duration_seconds}s. Total: {self.stats[ip]['total_duration']}s")
         self.save_stats()
 
     def get_leaderboard(self, limit=5):
@@ -166,12 +168,7 @@ def check_docker_connections(container_name, target_ports, socks_port=None, debu
                     if l_port == int(socks_port):
                         is_client = True
                  except: pass
-            if socks_port:
-                 try:
-                    l_port = int(local_addr.split(":")[-1])
-                    if l_port == int(socks_port):
-                        is_client = True
-                 except: pass
+
             
             if is_client:
                 continue
@@ -224,7 +221,7 @@ def check_connections(socks_port, target_ports):
                 l_ip, l_port = conn.laddr.ip, conn.laddr.port
                 r_ip, r_port = (conn.raddr.ip, conn.raddr.port) if conn.raddr else (None, None)
                 
-                if l_port == socks_port and r_ip:
+                if l_port == int(socks_port) and r_ip:
                      client = f"{r_ip}:{r_port}"
                      if client not in active_clients:
                          active_clients.append(client)
@@ -312,6 +309,7 @@ def main():
             for ip in left_ips:
                 start_time = client_sessions.pop(ip)
                 duration = (loop_time - start_time).total_seconds()
+                print(f"[DEBUG] Client disconnected: {ip}. Session duration: {duration}s")
                 stats_manager.update_client(ip, duration)
                 if debug:
                     print(f"[DEBUG] Client IP {ip} disconnected. Duration: {duration}s")
@@ -361,10 +359,13 @@ def main():
                     for ip, start_time in client_sessions.items():
                         session_dur = (flush_time - start_time).total_seconds()
                         if session_dur > 0:
+                            print(f"[DEBUG] Flushing session for {ip}. Duration: {session_dur}s")
                             stats_manager.update_client(ip, session_dur)
                             client_sessions[ip] = flush_time
                     
+                    
                     leaderboard = stats_manager.get_leaderboard()
+                    print(f"[DEBUG] Leaderboard generated: {leaderboard}")
                     fields = []
                     
                     if leaderboard:
