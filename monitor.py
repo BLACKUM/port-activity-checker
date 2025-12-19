@@ -94,13 +94,11 @@ class StatsManager:
         if ip not in self.stats:
             self.stats[ip] = {
                 "total_duration": 0,
-                "connections": 0,
                 "first_seen": datetime.now(timezone.utc).isoformat(),
                 "last_seen": None
             }
         
         self.stats[ip]["total_duration"] += duration_seconds
-        self.stats[ip]["connections"] += 1
         self.stats[ip]["last_seen"] = datetime.now(timezone.utc).isoformat()
         self.save_stats()
 
@@ -283,7 +281,6 @@ def main():
 
     stats_manager = StatsManager()
     client_sessions = {}
-    pending_disconnects = {}
     last_status = "disconnected"
     connection_start_time = None
 
@@ -307,33 +304,17 @@ def main():
             
             active_tracked_ips = set(client_sessions.keys())
             
-            for ip in current_client_ips:
-                if ip in pending_disconnects:
-                    if debug: print(f"[DEBUG] Client {ip} recovered from pending disconnect.")
-                    del pending_disconnects[ip]
-
             new_ips = current_client_ips - active_tracked_ips
             for ip in new_ips:
                 client_sessions[ip] = loop_time
             
             left_ips = active_tracked_ips - current_client_ips
             for ip in left_ips:
-                if ip not in pending_disconnects:
-                    pending_disconnects[ip] = loop_time
-            
-            grace_period = 20 # seconds
-            
-            for ip in list(pending_disconnects.keys()):
-                missing_since = pending_disconnects[ip]
-                if (loop_time - missing_since).total_seconds() > grace_period:
-                    start_time = client_sessions.pop(ip)
-                    del pending_disconnects[ip]
-                    
-                    duration = (missing_since - start_time).total_seconds()
-                    
-                    stats_manager.update_client(ip, duration)
-                    if debug:
-                        print(f"[DEBUG] Client IP {ip} disconnected (Confirmed). Duration: {duration}s")
+                start_time = client_sessions.pop(ip)
+                duration = (loop_time - start_time).total_seconds()
+                stats_manager.update_client(ip, duration)
+                if debug:
+                    print(f"[DEBUG] Client IP {ip} disconnected. Duration: {duration}s")
 
 
             target_active = len(active_connections) > 0
@@ -355,10 +336,7 @@ def main():
                             "inline": True
                         })
                     
-                    if active_clients:
-                        client_list = "\n".join([f"`{c}`" for c in active_clients[:5]])
-                    else:
-                        client_list = "No direct SOCKS clients found or unknown."
+                    client_list = "\n".join([f"`{c}`" for c in active_clients[:5]]) if active_clients else "No direct SOCKS clients found or unknown."
                         
                     fields.append({
                         "name": "👤 Proxy Client",
@@ -378,6 +356,14 @@ def main():
                         duration_str = f"{hours}h {minutes}m {seconds}s"
                     
                     print(f"🔴 Disconnected. Duration: {duration_str}")
+
+                    flush_time = datetime.now()
+                    for ip, start_time in client_sessions.items():
+                        session_dur = (flush_time - start_time).total_seconds()
+                        if session_dur > 0:
+                            stats_manager.update_client(ip, session_dur)
+                            client_sessions[ip] = flush_time
+                    
                     leaderboard = stats_manager.get_leaderboard()
                     fields = []
                     
@@ -385,8 +371,7 @@ def main():
                         lb_text = ""
                         for idx, (ip, data) in enumerate(leaderboard):
                             dur = get_formatted_duration(data['total_duration'])
-                            conns = data.get('connections', 0)
-                            lb_text += f"**{idx+1}.** `{ip}` - ⏳ {dur} - {conns} times\n"
+                            lb_text += f"**{idx+1}.** `{ip}` - ⏳ {dur}\n"
                         
                         fields.append({
                             "name": "🏆 Top Clients (Total Time)",
