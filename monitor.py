@@ -18,7 +18,12 @@ def load_config():
         "webhook_url": "",
         "check_interval": 5,
         "debug": False,
-        "leaderboard_show_country": False
+        "leaderboard_show_country": False,
+        "hide_client_info": False,
+        "hide_target_info": False,
+        "hide_system_info": False,
+        "hide_leaderboard": False,
+        "anonymize_ips": False
     }
     
     if not os.path.exists(CONFIG_FILE):
@@ -358,6 +363,11 @@ def main():
     webhook_url = config["webhook_url"]
     interval = config.get("check_interval", 5)
     debug = config.get("debug", False)
+    hide_client_info = config.get("hide_client_info", False)
+    hide_target_info = config.get("hide_target_info", False)
+    hide_system_info = config.get("hide_system_info", False)
+    hide_leaderboard = config.get("hide_leaderboard", False)
+    anonymize_ips = config.get("anonymize_ips", False)
     
     if container_name:
         print(f"Monitoring Docker Container: {container_name}")
@@ -443,53 +453,54 @@ def main():
                         target_groups[remote_ip]["ports"].add(str(conn['port']))
 
                     fields = []
-                    for i, remote_ip in enumerate(list(target_groups.keys())[:5]):
-                        group = target_groups[remote_ip]
-                        ports_sorted = sorted(list(group["ports"]), key=lambda x: int(x) if x.isdigit() else x)
-                        ports_str = ", ".join(ports_sorted)
+                    if not hide_target_info:
+                        for i, remote_ip in enumerate(list(target_groups.keys())[:5]):
+                            group = target_groups[remote_ip]
+                            ports_sorted = sorted(list(group["ports"]), key=lambda x: int(x) if x.isdigit() else x)
+                            ports_str = ", ".join(ports_sorted)
 
-                        ip_info = get_ip_info(remote_ip)
+                            ip_info = get_ip_info(remote_ip)
 
-                        flags = []
-                        if ip_info.get('mobile'): flags.append("📱")
-                        if ip_info.get('proxy'): flags.append("🛡️")
-                        if ip_info.get('hosting'): flags.append("☁️")
-                        flag_str = " ".join(flags)
+                            flags = []
+                            if ip_info.get('mobile'): flags.append("📱")
+                            if ip_info.get('proxy'): flags.append("🛡️")
+                            if ip_info.get('hosting'): flags.append("☁️")
+                            flag_str = " ".join(flags)
 
-                        loc_parts = []
-                        if ip_info.get('city'): loc_parts.append(ip_info['city'])
-                        if ip_info.get('regionName'): loc_parts.append(ip_info['regionName'])
-                        if ip_info.get('country'): loc_parts.append(ip_info['country'])
-                        if ip_info.get('zip'): loc_parts.append(ip_info['zip'])
-                        loc_str = ", ".join(loc_parts)
+                            loc_parts = []
+                            if ip_info.get('city'): loc_parts.append(ip_info['city'])
+                            if ip_info.get('regionName'): loc_parts.append(ip_info['regionName'])
+                            if ip_info.get('country'): loc_parts.append(ip_info['country'])
+                            if ip_info.get('zip'): loc_parts.append(ip_info['zip'])
+                            loc_str = ", ".join(loc_parts)
 
-                        net_parts = []
-                        if ip_info.get('as'): net_parts.append(ip_info['as']) 
-                        if ip_info.get('isp'): net_parts.append(ip_info['isp'])
-                        net_str = " | ".join(net_parts)
+                            net_parts = []
+                            if ip_info.get('as'): net_parts.append(ip_info['as']) 
+                            if ip_info.get('isp'): net_parts.append(ip_info['isp'])
+                            net_str = " | ".join(net_parts)
 
-                        dns_part = ip_info.get('reverse', '')
-                        
-                        map_url = ""
-                        if ip_info.get('lat') and ip_info.get('lon'):
-                            map_url = f" | [Map](https://www.google.com/maps/search/?api=1&query={ip_info['lat']},{ip_info['lon']})"
+                            dns_part = ip_info.get('reverse', '')
+                            
+                            map_url = ""
+                            if ip_info.get('lat') and ip_info.get('lon'):
+                                map_url = f" | [Map](https://www.google.com/maps/search/?api=1&query={ip_info['lat']},{ip_info['lon']})"
 
-                        lines = [
-                            f"**IP**: `{remote_ip}`{map_url} {flag_str}",
-                            f"**Ports**: `{ports_str}`",
-                            f"**Location**: {loc_str}",
-                            f"**Network**: {net_str}"
-                        ]
-                        if dns_part:
-                            lines.append(f"**DNS**: `{dns_part}`")
+                            lines = [
+                                f"**IP**: `{remote_ip}`{map_url} {flag_str}",
+                                f"**Ports**: `{ports_str}`",
+                                f"**Location**: {loc_str}",
+                                f"**Network**: {net_str}"
+                            ]
+                            if dns_part:
+                                lines.append(f"**DNS**: `{dns_part}`")
 
-                        value_str = "\n".join(lines)
+                            value_str = "\n".join(lines)
 
-                        fields.append({
-                            "name": f"🌍 Target Connection #{i+1}",
-                            "value": value_str,
-                            "inline": True
-                        })
+                            fields.append({
+                                "name": f"🌍 Target Connection #{i+1}",
+                                "value": value_str,
+                                "inline": True
+                            })
                     
                     client_groups = {}
                     for c in active_clients:
@@ -505,52 +516,67 @@ def main():
                         client_groups[c_ip].append(c_port)
 
                     client_list_items = []
-                    for i, c_ip in enumerate(list(client_groups.keys())[:5]):
-                        ports = sorted(client_groups[c_ip])
-                        ports_str = ", ".join(ports)
-                        
-                        ip_info = get_ip_info(c_ip)
-                        
-                        p_flags = []
-                        if ip_info.get('mobile'): p_flags.append("📱")
-                        if ip_info.get('proxy'): p_flags.append("🛡️")
-                        if ip_info.get('hosting'): p_flags.append("☁️")
-                        p_flag_str = " ".join(p_flags)
-                        
-                        loc_parts = []
-                        if ip_info.get('city'): loc_parts.append(ip_info['city'])
-                        if ip_info.get('regionName'): loc_parts.append(ip_info['regionName'])
-                        if ip_info.get('country'): loc_parts.append(ip_info['country'])
-                        if ip_info.get('zip'): loc_parts.append(ip_info['zip'])
-                        loc_str = ", ".join(loc_parts)
-
-                        net_parts = []
-                        if ip_info.get('as'): net_parts.append(ip_info['as']) 
-                        if ip_info.get('isp'): net_parts.append(ip_info['isp'])
-                        net_str = " | ".join(net_parts)
-
-                        dns_part = ip_info.get('reverse', '')
-
-                        map_url = ""
-                        if ip_info.get('lat') and ip_info.get('lon'):
-                            map_url = f" | [Map](https://www.google.com/maps/search/?api=1&query={ip_info['lat']},{ip_info['lon']})"
-
-                        lines = [
-                            f"**IP**: `{c_ip}`{map_url} {p_flag_str}",
-                            f"**Ports**: `{ports_str}`",
-                            f"**Location**: {loc_str}",
-                            f"**Network**: {net_str}"
-                        ]
-                        if dns_part:
-                            lines.append(f"**DNS**: `{dns_part}`")
-                        
-                        value_str = "\n".join(lines)
-                        
+                    if hide_client_info:
                         fields.append({
-                            "name": f"👤 Proxy Client #{i+1}",
-                            "value": value_str,
-                            "inline": True
+                            "name": "👤 Proxy Client",
+                            "value": "Hidden (Privacy Mode Enabled)",
+                            "inline": False
                         })
+                    else:
+                        for i, c_ip in enumerate(list(client_groups.keys())[:5]):
+                            ports = sorted(client_groups[c_ip])
+                            ports_str = ", ".join(ports)
+                            
+                            display_ip = c_ip
+                            if anonymize_ips:
+                                parts = c_ip.split('.')
+                                if len(parts) == 4:
+                                    display_ip = f"{parts[0]}.{parts[1]}.{parts[2]}.xxx"
+                                elif ":" in c_ip:
+                                     display_ip = "xxxx:..."
+
+                            ip_info = get_ip_info(c_ip)
+                            
+                            p_flags = []
+                            if ip_info.get('mobile'): p_flags.append("📱")
+                            if ip_info.get('proxy'): p_flags.append("🛡️")
+                            if ip_info.get('hosting'): p_flags.append("☁️")
+                            p_flag_str = " ".join(p_flags)
+                            
+                            loc_parts = []
+                            if ip_info.get('city'): loc_parts.append(ip_info['city'])
+                            if ip_info.get('regionName'): loc_parts.append(ip_info['regionName'])
+                            if ip_info.get('country'): loc_parts.append(ip_info['country'])
+                            if ip_info.get('zip'): loc_parts.append(ip_info['zip'])
+                            loc_str = ", ".join(loc_parts)
+
+                            net_parts = []
+                            if ip_info.get('as'): net_parts.append(ip_info['as']) 
+                            if ip_info.get('isp'): net_parts.append(ip_info['isp'])
+                            net_str = " | ".join(net_parts)
+
+                            dns_part = ip_info.get('reverse', '')
+
+                            map_url = ""
+                            if ip_info.get('lat') and ip_info.get('lon'):
+                                map_url = f" | [Map](https://www.google.com/maps/search/?api=1&query={ip_info['lat']},{ip_info['lon']})"
+
+                            lines = [
+                                f"**IP**: `{display_ip}`{map_url} {p_flag_str}",
+                                f"**Ports**: `{ports_str}`",
+                                f"**Location**: {loc_str}",
+                                f"**Network**: {net_str}"
+                            ]
+                            if dns_part:
+                                lines.append(f"**DNS**: `{dns_part}`")
+                            
+                            value_str = "\n".join(lines)
+                            
+                            fields.append({
+                                "name": f"👤 Proxy Client #{i+1}",
+                                "value": value_str,
+                                "inline": True
+                            })
                     
                     if not client_groups:
                          fields.append({
@@ -578,11 +604,12 @@ def main():
                         f"**Uptime**: {up_hours}h {up_mins}m"
                     )
 
-                    fields.append({
-                        "name": "💻 System Load",
-                        "value": sys_stats,
-                        "inline": False
-                    })
+                    if not hide_system_info:
+                        fields.append({
+                            "name": "💻 System Load",
+                            "value": sys_stats,
+                            "inline": False
+                        })
 
                     msg = f"Detected traffic to **{ports_str}**"
                     print(f"🟢 Connected: {ports_str} | Clients: {active_clients}")
@@ -630,7 +657,7 @@ def main():
                             dur_str = get_formatted_duration(data['total_duration'])
                             lb_text += f"**{idx+1}.** `{ip}` - ⏳ {dur_str}\n"
 
-                    if lb_text:
+                    if lb_text and not hide_leaderboard:
                         fields.append({
                             "name": "🏆 Top Clients (Total Time)",
                             "value": lb_text,

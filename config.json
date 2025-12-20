@@ -5,5 +5,10 @@
     "webhook_url": "",
     "check_interval": 5,
     "leaderboard_show_country": false,
+    "hide_client_info": false,
+    "hide_target_info": false,
+    "hide_system_info": false,
+    "hide_leaderboard": false,
+    "anonymize_ips": false,
     "debug": false
 }
