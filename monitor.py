@@ -139,9 +139,22 @@ def get_country_from_ip(ip):
     return ip
 
 def get_formatted_duration(seconds):
-    hours, remainder = divmod(int(seconds), 3600)
+    seconds = int(seconds)
+    if seconds == 0:
+        return "0s"
+    
+    hours, remainder = divmod(seconds, 3600)
     minutes, secs = divmod(remainder, 60)
-    return f"{hours}h {minutes}m {secs}s"
+    
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    if secs > 0:
+        parts.append(f"{secs}s")
+        
+    return " ".join(parts)
 
 import subprocess
 
@@ -354,13 +367,25 @@ def main():
                     
                     fields = []
                     for i, conn in enumerate(active_connections[:5]):
+                        remote_ip = conn['remote']
+                        if ':' in remote_ip:
+                            remote_ip = remote_ip.rsplit(':', 1)[0]
+                            
                         fields.append({
                             "name": f"🌍 Target Connection #{i+1}",
-                            "value": f"**IP**: `{conn['remote']}`\n**Port**: `{conn['port']}`",
+                            "value": f"**IP**: `{remote_ip}`\n**Port**: `{conn['port']}`",
                             "inline": True
                         })
                     
-                    client_list = "\n".join([f"`{c}`" for c in active_clients[:5]]) if active_clients else "No direct SOCKS clients found or unknown."
+                    client_list_items = []
+                    for c in active_clients[:5]:
+                        if ':' in c:
+                            parts = c.rsplit(':', 1)
+                            client_list_items.append(f"**IP**: `{parts[0]}`\n**Port**: `{parts[1]}`")
+                        else:
+                            client_list_items.append(f"**IP**: `{c}`")
+                    
+                    client_list = "\n\n".join(client_list_items) if active_clients else "No direct SOCKS clients found or unknown."
                         
                     fields.append({
                         "name": "👤 Proxy Client",
@@ -374,10 +399,8 @@ def main():
                 else:
                     duration_str = "Unknown"
                     if connection_start_time:
-                        duration = datetime.now() - connection_start_time
-                        hours, remainder = divmod(duration.seconds, 3600)
-                        minutes, seconds = divmod(remainder, 60)
-                        duration_str = f"{hours}h {minutes}m {seconds}s"
+                        duration_seconds = (datetime.now() - connection_start_time).total_seconds()
+                        duration_str = get_formatted_duration(duration_seconds)
                     
                     print(f"🔴 Disconnected. Duration: {duration_str}")
 
