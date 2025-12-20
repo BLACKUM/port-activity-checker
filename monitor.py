@@ -15,7 +15,10 @@ def load_config():
         "target_ports": [],
         "webhook_url": "",
         "check_interval": 5,
-        "debug": False
+        "webhook_url": "",
+        "check_interval": 5,
+        "debug": False,
+        "leaderboard_show_country": False
     }
     
     if not os.path.exists(CONFIG_FILE):
@@ -110,7 +113,32 @@ class StatsManager:
             key=lambda item: item[1].get("total_duration", 0),
             reverse=True
         )
+
         return sorted_clients[:limit]
+
+# Cache for IP to Country mapping
+ip_country_cache = {}
+
+def get_country_from_ip(ip):
+    if ip in ip_country_cache:
+        return ip_country_cache[ip]
+    
+    # Skip private/local IPs
+    if ip.startswith("127.") or ip.startswith("192.168.") or ip.startswith("10.") or ip == "::1":
+        return "Localhost/Private"
+
+    try:
+        response = requests.get(f"http://ip-api.com/json/{ip}", timeout=3)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "success":
+                country = data.get("country", ip)
+                ip_country_cache[ip] = country
+                return country
+    except Exception as e:
+        print(f"[WARN] Failed to resolve IP {ip}: {e}")
+    
+    return ip
 
 def get_formatted_duration(seconds):
     hours, remainder = divmod(int(seconds), 3600)
@@ -370,9 +398,16 @@ def main():
                     
                     if leaderboard:
                         lb_text = ""
+                        show_country = config.get("leaderboard_show_country", False)
+                        
                         for idx, (ip, data) in enumerate(leaderboard):
                             dur = get_formatted_duration(data['total_duration'])
-                            lb_text += f"**{idx+1}.** `{ip}` - ⏳ {dur}\n"
+                            
+                            display_name = ip
+                            if show_country:
+                                display_name = get_country_from_ip(ip)
+                                
+                            lb_text += f"**{idx+1}.** `{display_name}` - ⏳ {dur}\n"
                         
                         fields.append({
                             "name": "🏆 Top Clients (Total Time)",

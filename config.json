@@ -4,5 +4,6 @@
     "target_ports": [],
     "webhook_url": "",
     "check_interval": 5,
+    "leaderboard_show_country": false,
     "debug": false
 }
