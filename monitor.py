@@ -422,11 +422,30 @@ def main():
                     ports_str = ", ".join([str(p) for p in unique_ports])
                     
                     fields = []
-                    for i, conn in enumerate(active_connections[:5]):
+                    target_groups = {}
+                    for conn in active_connections:
                         remote_ip = conn['remote']
                         if ':' in remote_ip:
                             remote_ip = remote_ip.rsplit(':', 1)[0]
                         
+                        if remote_ip not in target_groups:
+                            target_groups[remote_ip] = {
+                                "ports": set(),
+                                "processes": set()
+                            }
+                        
+                        target_groups[remote_ip]["ports"].add(str(conn['port']))
+                        target_groups[remote_ip]["processes"].add(conn.get('process', 'Unknown'))
+
+                    fields = []
+                    for i, remote_ip in enumerate(list(target_groups.keys())[:5]):
+                        group = target_groups[remote_ip]
+                        ports_sorted = sorted(list(group["ports"]), key=lambda x: int(x) if x.isdigit() else x)
+                        ports_str = ", ".join(ports_sorted)
+                        
+                        processes_sorted = sorted(list(group["processes"]))
+                        process_str = ", ".join(processes_sorted)
+
                         ip_info = get_ip_info(remote_ip)
                         loc_str = f"{ip_info.get('city', '?')}, {ip_info.get('regionName', '?')}, {ip_info.get('country', '?')}"
                         isp_str = f"{ip_info.get('isp', '?')} ({ip_info.get('org', '?')})"
@@ -437,8 +456,8 @@ def main():
 
                         value_str = (
                             f"**IP**: `{remote_ip}`{map_url}\n"
-                            f"**Port**: `{conn['port']}`\n"
-                            f"**Process**: `{conn.get('process', 'Unknown')}`\n"
+                            f"**Ports**: `{ports_str}`\n"
+                            f"**Process**: `{process_str}`\n"
                             f"**Location**: {loc_str}\n"
                             f"**ISP**: {isp_str}"
                         )
@@ -449,8 +468,8 @@ def main():
                             "inline": True
                         })
                     
-                    client_list_items = []
-                    for c in active_clients[:5]:
+                    client_groups = {}
+                    for c in active_clients:
                         c_ip = c
                         c_port = "?"
                         if ':' in c:
@@ -458,10 +477,19 @@ def main():
                             c_ip = parts[0]
                             c_port = parts[1]
                         
+                        if c_ip not in client_groups:
+                            client_groups[c_ip] = []
+                        client_groups[c_ip].append(c_port)
+
+                    client_list_items = []
+                    for c_ip in list(client_groups.keys())[:5]:
+                        ports = sorted(client_groups[c_ip])
+                        ports_str = ", ".join(ports)
+                        
                         ip_info = get_ip_info(c_ip)
                         loc_short = f"{ip_info.get('country', '?')}"
                         
-                        client_list_items.append(f"**IP**: `{c_ip}` ({loc_short})\n**Port**: `{c_port}`")
+                        client_list_items.append(f"**IP**: `{c_ip}` ({loc_short})\n**Ports**: `{ports_str}`")
                     
                     client_list = "\n\n".join(client_list_items) if active_clients else "No direct SOCKS clients found or unknown."
                         
