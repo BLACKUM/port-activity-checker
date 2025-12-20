@@ -116,27 +116,63 @@ class StatsManager:
 
         return sorted_clients[:limit]
 
+IP_CACHE_FILE = 'ip_cache.json'
 ip_country_cache = {}
 
-def get_country_from_ip(ip):
+def load_ip_cache():
+    global ip_country_cache
+    if os.path.exists(IP_CACHE_FILE):
+        try:
+            with open(IP_CACHE_FILE, 'r') as f:
+                ip_country_cache = json.load(f)
+            print(f"[INFO] Loaded {len(ip_country_cache)} IP records from cache.")
+        except Exception as e:
+            print(f"[WARN] Failed to load IP cache: {e}")
+
+def save_ip_cache():
+    try:
+        with open(IP_CACHE_FILE, 'w') as f:
+            json.dump(ip_country_cache, f, indent=4)
+    except Exception as e:
+        print(f"[WARN] Failed to save IP cache: {e}")
+
+def get_ip_info(ip):
     if ip in ip_country_cache:
         return ip_country_cache[ip]
     
     if ip.startswith("127.") or ip.startswith("192.168.") or ip.startswith("10.") or ip == "::1":
-        return "Localhost/Private"
+        return {
+            "country": "Localhost",
+            "city": "Private",
+            "regionName": "Network",
+            "isp": "Local",
+            "org": "Local",
+            "lat": 0,
+            "lon": 0
+        }
 
     try:
         response = requests.get(f"http://ip-api.com/json/{ip}", timeout=3)
         if response.status_code == 200:
             data = response.json()
             if data.get("status") == "success":
-                country = data.get("country", ip)
-                ip_country_cache[ip] = country
-                return country
+                ip_country_cache[ip] = data
+                save_ip_cache()
+                return data
     except Exception as e:
         print(f"[WARN] Failed to resolve IP {ip}: {e}")
     
-    return ip
+    fallback_data = {
+        "country": "Unknown",
+        "city": "Unknown",
+        "regionName": "Unknown",
+        "isp": "Unknown",
+        "org": "Unknown",
+        "lat": 0,
+        "lon": 0
+    }
+    ip_country_cache[ip] = fallback_data
+    return fallback_data
 
 def get_formatted_duration(seconds):
     seconds = int(seconds)
@@ -233,12 +269,24 @@ def check_docker_connections(container_name, target_ports, socks_port=None, debu
                          break
             
             if is_match:
+                process_info = "Unknown"
+                if len(parts) >= 7:
+                     process_info = parts[6]
+                
                 conn_details = {
                     "remote": remote_addr,
                     "local": local_addr,
-                    "port": current_port
+                    "port": current_port,
+                    "process": process_info
                 }
-                if conn_details not in found_connections:
+
+                exists = False
+                for existing in found_connections:
+                    if existing['remote'] == remote_addr and existing['port'] == current_port:
+                        exists = True
+                        break
+                
+                if not exists:
                     found_connections.append(conn_details)
                     if debug:
                         print(f"[DEBUG] Match! {conn_details}")
@@ -274,10 +322,17 @@ def check_connections(socks_port, target_ports):
                          is_match = True
                     
                     if is_match:
+                        try:
+                            proc = psutil.Process(conn.pid)
+                            process_name = f"{conn.pid}/{proc.name()}"
+                        except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+                            process_name = "Unknown"
+
                         found_connections.append({
                             "remote": f"{r_ip}:{r_port}",
                             "local": f"{l_ip}:{l_port}",
-                            "port": r_port
+                            "port": r_port,
+                            "process": process_name
                         })
 
     except (psutil.AccessDenied, psutil.NoSuchProcess):
@@ -287,6 +342,7 @@ def check_connections(socks_port, target_ports):
 
 def main():
     print("Starting SOCKS5 Monitor...")
+    load_ip_cache()
     config = load_config()
     
     socks_port = config["socks_port"]
@@ -370,20 +426,42 @@ def main():
                         remote_ip = conn['remote']
                         if ':' in remote_ip:
                             remote_ip = remote_ip.rsplit(':', 1)[0]
-                            
+                        
+                        ip_info = get_ip_info(remote_ip)
+                        loc_str = f"{ip_info.get('city', '?')}, {ip_info.get('regionName', '?')}, {ip_info.get('country', '?')}"
+                        isp_str = f"{ip_info.get('isp', '?')} ({ip_info.get('org', '?')})"
+                        
+                        map_url = ""
+                        if ip_info.get('lat') and ip_info.get('lon'):
+                            map_url = f" | [Map](https://www.google.com/maps/search/?api=1&query={ip_info['lat']},{ip_info['lon']})"
+
+                        value_str = (
+                            f"**IP**: `{remote_ip}`{map_url}\n"
+                            f"**Port**: `{conn['port']}`\n"
+                            f"**Process**: `{conn.get('process', 'Unknown')}`\n"
+                            f"**Location**: {loc_str}\n"
+                            f"**ISP**: {isp_str}"
+                        )
+
                         fields.append({
                             "name": f"🌍 Target Connection #{i+1}",
-                            "value": f"**IP**: `{remote_ip}`\n**Port**: `{conn['port']}`",
+                            "value": value_str,
                             "inline": True
                         })
                     
                     client_list_items = []
                     for c in active_clients[:5]:
+                        c_ip = c
+                        c_port = "?"
                         if ':' in c:
                             parts = c.rsplit(':', 1)
-                            client_list_items.append(f"**IP**: `{parts[0]}`\n**Port**: `{parts[1]}`")
-                        else:
-                            client_list_items.append(f"**IP**: `{c}`")
+                            c_ip = parts[0]
+                            c_port = parts[1]
+                        
+                        ip_info = get_ip_info(c_ip)
+                        loc_short = f"{ip_info.get('country', '?')}"
+                        
+                        client_list_items.append(f"**IP**: `{c_ip}` ({loc_short})\n**Port**: `{c_port}`")
                     
                     client_list = "\n\n".join(client_list_items) if active_clients else "No direct SOCKS clients found or unknown."
                         
@@ -393,6 +471,19 @@ def main():
                         "inline": False
                     })
                     
+                    cpu_usage = psutil.cpu_percent()
+                    ram = psutil.virtual_memory()
+                    sys_stats = f"**CPU**: {cpu_usage}% | **RAM**: {ram.percent}% ({get_formatted_duration(ram.used)} used)"
+                    ram_gb = round(ram.used / (1024**3), 2)
+                    total_gb = round(ram.total / (1024**3), 2)
+                    sys_stats = f"**CPU**: {cpu_usage}% | **RAM**: {ram.percent}% ({ram_gb}GB / {total_gb}GB)"
+
+                    fields.append({
+                        "name": "💻 System Load",
+                        "value": sys_stats,
+                        "inline": False
+                    })
+
                     msg = f"Detected traffic to **{ports_str}**"
                     print(f"🟢 Connected: {ports_str} | Clients: {active_clients}")
                     send_discord_webhook(webhook_url, "🟢 Connection Established", msg, fields, 0x00ff00)
@@ -419,7 +510,8 @@ def main():
                     if show_country:
                         country_stats = {}
                         for ip, data in stats_manager.stats.items():
-                            country = get_country_from_ip(ip)
+                            info = get_ip_info(ip)
+                            country = info.get("country", "Unknown")
                             current_total = country_stats.get(country, 0)
                             country_stats[country] = current_total + data.get("total_duration", 0)
                         
