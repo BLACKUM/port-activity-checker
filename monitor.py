@@ -458,13 +458,13 @@ def main():
 
                         loc_parts = []
                         if ip_info.get('city'): loc_parts.append(ip_info['city'])
-                        if ip_info.get('region'): loc_parts.append(ip_info['region'])
-                        if ip_info.get('countryCode'): loc_parts.append(ip_info['countryCode'])
+                        if ip_info.get('regionName'): loc_parts.append(ip_info['regionName'])
+                        if ip_info.get('country'): loc_parts.append(ip_info['country'])
                         if ip_info.get('zip'): loc_parts.append(ip_info['zip'])
                         loc_str = ", ".join(loc_parts)
 
                         net_parts = []
-                        if ip_info.get('as'): net_parts.append(ip_info['as'].split(' ', 1)[0]) # AS Number
+                        if ip_info.get('as'): net_parts.append(ip_info['as']) 
                         if ip_info.get('isp'): net_parts.append(ip_info['isp'])
                         net_str = " | ".join(net_parts)
 
@@ -477,8 +477,8 @@ def main():
                         lines = [
                             f"**IP**: `{remote_ip}`{map_url} {flag_str}",
                             f"**Ports**: `{ports_str}`",
-                            f"**Loc**: {loc_str}",
-                            f"**Net**: {net_str}"
+                            f"**Location**: {loc_str}",
+                            f"**Network**: {net_str}"
                         ]
                         if dns_part:
                             lines.append(f"**DNS**: `{dns_part}`")
@@ -519,13 +519,13 @@ def main():
                         
                         loc_parts = []
                         if ip_info.get('city'): loc_parts.append(ip_info['city'])
-                        if ip_info.get('region'): loc_parts.append(ip_info['region'])
-                        if ip_info.get('countryCode'): loc_parts.append(ip_info['countryCode'])
+                        if ip_info.get('regionName'): loc_parts.append(ip_info['regionName'])
+                        if ip_info.get('country'): loc_parts.append(ip_info['country'])
                         if ip_info.get('zip'): loc_parts.append(ip_info['zip'])
                         loc_str = ", ".join(loc_parts)
 
                         net_parts = []
-                        if ip_info.get('as'): net_parts.append(ip_info['as'].split(' ', 1)[0]) 
+                        if ip_info.get('as'): net_parts.append(ip_info['as']) 
                         if ip_info.get('isp'): net_parts.append(ip_info['isp'])
                         net_str = " | ".join(net_parts)
 
@@ -538,8 +538,8 @@ def main():
                         lines = [
                             f"**IP**: `{c_ip}`{map_url} {p_flag_str}",
                             f"**Ports**: `{ports_str}`",
-                            f"**Loc**: {loc_str}",
-                            f"**Net**: {net_str}"
+                            f"**Location**: {loc_str}",
+                            f"**Network**: {net_str}"
                         ]
                         if dns_part:
                             lines.append(f"**DNS**: `{dns_part}`")
@@ -573,10 +573,9 @@ def main():
                     disk_gb_total = round(disk.total / (1024**3), 0)
                     
                     sys_stats = (
-                        f"**CPU**: {cpu_usage}% | "
-                        f"**RAM**: {ram.percent}% ({ram_gb_used}/{ram_gb_total}G) | "
-                        f"**Disk**: {disk.percent}% ({int(disk_gb_used)}/{int(disk_gb_total)}G) | "
-                        f"**Up**: {up_hours}h {up_mins}m"
+                        f"**CPU**: {cpu_usage}% | **RAM**: {ram.percent}% ({ram_gb_used}/{ram_gb_total}G)\n"
+                        f"**Disk**: {disk.percent}% ({int(disk_gb_used)}/{int(disk_gb_total)}G)\n"
+                        f"**Uptime**: {up_hours}h {up_mins}m"
                     )
 
                     fields.append({
