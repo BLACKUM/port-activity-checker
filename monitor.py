@@ -116,14 +116,12 @@ class StatsManager:
 
         return sorted_clients[:limit]
 
-# Cache for IP to Country mapping
 ip_country_cache = {}
 
 def get_country_from_ip(ip):
     if ip in ip_country_cache:
         return ip_country_cache[ip]
     
-    # Skip private/local IPs
     if ip.startswith("127.") or ip.startswith("192.168.") or ip.startswith("10.") or ip == "::1":
         return "Localhost/Private"
 
@@ -392,23 +390,32 @@ def main():
                             client_sessions[ip] = flush_time
                     
                     
-                    leaderboard = stats_manager.get_leaderboard()
-                    print(f"[DEBUG] Leaderboard generated: {leaderboard}")
-                    fields = []
-                    
-                    if leaderboard:
-                        lb_text = ""
-                        show_country = config.get("leaderboard_show_country", False)
+                    show_country = config.get("leaderboard_show_country", False)
+                    lb_text = ""
+
+                    if show_country:
+                        country_stats = {}
+                        for ip, data in stats_manager.stats.items():
+                            country = get_country_from_ip(ip)
+                            current_total = country_stats.get(country, 0)
+                            country_stats[country] = current_total + data.get("total_duration", 0)
                         
+                        sorted_countries = sorted(
+                            country_stats.items(),
+                            key=lambda item: item[1],
+                            reverse=True
+                        )[:5]
+                        
+                        for idx, (country, total_duration) in enumerate(sorted_countries):
+                            dur_str = get_formatted_duration(total_duration)
+                            lb_text += f"**{idx+1}.** `{country}` - ⏳ {dur_str}\n"
+                    else:
+                        leaderboard = stats_manager.get_leaderboard()
                         for idx, (ip, data) in enumerate(leaderboard):
-                            dur = get_formatted_duration(data['total_duration'])
-                            
-                            display_name = ip
-                            if show_country:
-                                display_name = get_country_from_ip(ip)
-                                
-                            lb_text += f"**{idx+1}.** `{display_name}` - ⏳ {dur}\n"
-                        
+                            dur_str = get_formatted_duration(data['total_duration'])
+                            lb_text += f"**{idx+1}.** `{ip}` - ⏳ {dur_str}\n"
+
+                    if lb_text:
                         fields.append({
                             "name": "🏆 Top Clients (Total Time)",
                             "value": lb_text,
