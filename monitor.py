@@ -152,7 +152,14 @@ def get_ip_info(ip):
         }
 
     try:
-        response = requests.get(f"http://ip-api.com/json/{ip}", timeout=3)
+        fields = "status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,mobile,proxy,hosting,reverse,query"
+        
+        if ip in ip_country_cache:
+            data = ip_country_cache[ip]
+            if "mobile" in data: 
+                return data
+        
+        response = requests.get(f"http://ip-api.com/json/{ip}?fields={fields}", timeout=3)
         if response.status_code == 200:
             data = response.json()
             if data.get("status") == "success":
@@ -430,37 +437,51 @@ def main():
                         
                         if remote_ip not in target_groups:
                             target_groups[remote_ip] = {
-                                "ports": set(),
-                                "processes": set()
+                                "ports": set()
                             }
                         
                         target_groups[remote_ip]["ports"].add(str(conn['port']))
-                        target_groups[remote_ip]["processes"].add(conn.get('process', 'Unknown'))
 
                     fields = []
                     for i, remote_ip in enumerate(list(target_groups.keys())[:5]):
                         group = target_groups[remote_ip]
                         ports_sorted = sorted(list(group["ports"]), key=lambda x: int(x) if x.isdigit() else x)
                         ports_str = ", ".join(ports_sorted)
-                        
-                        processes_sorted = sorted(list(group["processes"]))
-                        process_str = ", ".join(processes_sorted)
 
-                        ip_info = get_ip_info(remote_ip)
-                        loc_str = f"{ip_info.get('city', '?')}, {ip_info.get('regionName', '?')}, {ip_info.get('country', '?')}"
-                        isp_str = f"{ip_info.get('isp', '?')} ({ip_info.get('org', '?')})"
+                        flags = []
+                        if ip_info.get('mobile'): flags.append("📱")
+                        if ip_info.get('proxy'): flags.append("🛡️")
+                        if ip_info.get('hosting'): flags.append("☁️")
+                        flag_str = " ".join(flags)
+
+                        loc_parts = []
+                        if ip_info.get('city'): loc_parts.append(ip_info['city'])
+                        if ip_info.get('region'): loc_parts.append(ip_info['region'])
+                        if ip_info.get('countryCode'): loc_parts.append(ip_info['countryCode'])
+                        if ip_info.get('zip'): loc_parts.append(ip_info['zip'])
+                        loc_str = ", ".join(loc_parts)
+
+                        net_parts = []
+                        if ip_info.get('as'): net_parts.append(ip_info['as'].split(' ', 1)[0]) # AS Number
+                        if ip_info.get('isp'): net_parts.append(ip_info['isp'])
+                        net_str = " | ".join(net_parts)
+
+                        dns_part = ip_info.get('reverse', '')
                         
                         map_url = ""
                         if ip_info.get('lat') and ip_info.get('lon'):
                             map_url = f" | [Map](https://www.google.com/maps/search/?api=1&query={ip_info['lat']},{ip_info['lon']})"
 
-                        value_str = (
-                            f"**IP**: `{remote_ip}`{map_url}\n"
-                            f"**Ports**: `{ports_str}`\n"
-                            f"**Process**: `{process_str}`\n"
-                            f"**Location**: {loc_str}\n"
-                            f"**ISP**: {isp_str}"
-                        )
+                        lines = [
+                            f"**IP**: `{remote_ip}`{map_url} {flag_str}",
+                            f"**Ports**: `{ports_str}`",
+                            f"**Loc**: {loc_str}",
+                            f"**Net**: {net_str}"
+                        ]
+                        if dns_part:
+                            lines.append(f"**DNS**: `{dns_part}`")
+
+                        value_str = "\n".join(lines)
 
                         fields.append({
                             "name": f"🌍 Target Connection #{i+1}",
@@ -482,29 +503,79 @@ def main():
                         client_groups[c_ip].append(c_port)
 
                     client_list_items = []
-                    for c_ip in list(client_groups.keys())[:5]:
+                    for i, c_ip in enumerate(list(client_groups.keys())[:5]):
                         ports = sorted(client_groups[c_ip])
                         ports_str = ", ".join(ports)
                         
                         ip_info = get_ip_info(c_ip)
-                        loc_short = f"{ip_info.get('country', '?')}"
                         
-                        client_list_items.append(f"**IP**: `{c_ip}` ({loc_short})\n**Ports**: `{ports_str}`")
+                        p_flags = []
+                        if ip_info.get('mobile'): p_flags.append("📱")
+                        if ip_info.get('proxy'): p_flags.append("🛡️")
+                        if ip_info.get('hosting'): p_flags.append("☁️")
+                        p_flag_str = " ".join(p_flags)
+                        
+                        loc_parts = []
+                        if ip_info.get('city'): loc_parts.append(ip_info['city'])
+                        if ip_info.get('region'): loc_parts.append(ip_info['region'])
+                        if ip_info.get('countryCode'): loc_parts.append(ip_info['countryCode'])
+                        if ip_info.get('zip'): loc_parts.append(ip_info['zip'])
+                        loc_str = ", ".join(loc_parts)
+
+                        net_parts = []
+                        if ip_info.get('as'): net_parts.append(ip_info['as'].split(' ', 1)[0]) 
+                        if ip_info.get('isp'): net_parts.append(ip_info['isp'])
+                        net_str = " | ".join(net_parts)
+
+                        dns_part = ip_info.get('reverse', '')
+
+                        map_url = ""
+                        if ip_info.get('lat') and ip_info.get('lon'):
+                            map_url = f" | [Map](https://www.google.com/maps/search/?api=1&query={ip_info['lat']},{ip_info['lon']})"
+
+                        lines = [
+                            f"**IP**: `{c_ip}`{map_url} {p_flag_str}",
+                            f"**Ports**: `{ports_str}`",
+                            f"**Loc**: {loc_str}",
+                            f"**Net**: {net_str}"
+                        ]
+                        if dns_part:
+                            lines.append(f"**DNS**: `{dns_part}`")
+                        
+                        value_str = "\n".join(lines)
+                        
+                        fields.append({
+                            "name": f"👤 Proxy Client #{i+1}",
+                            "value": value_str,
+                            "inline": True
+                        })
                     
-                    client_list = "\n\n".join(client_list_items) if active_clients else "No direct SOCKS clients found or unknown."
-                        
-                    fields.append({
-                        "name": "👤 Proxy Client",
-                        "value": client_list,
-                        "inline": False
-                    })
+                    if not client_groups:
+                         fields.append({
+                            "name": "👤 Proxy Client",
+                            "value": "No direct SOCKS clients found.",
+                            "inline": False
+                        })
                     
                     cpu_usage = psutil.cpu_percent()
                     ram = psutil.virtual_memory()
-                    sys_stats = f"**CPU**: {cpu_usage}% | **RAM**: {ram.percent}% ({get_formatted_duration(ram.used)} used)"
-                    ram_gb = round(ram.used / (1024**3), 2)
-                    total_gb = round(ram.total / (1024**3), 2)
-                    sys_stats = f"**CPU**: {cpu_usage}% | **RAM**: {ram.percent}% ({ram_gb}GB / {total_gb}GB)"
+                    disk = psutil.disk_usage('/')
+                    
+                    uptime_seconds = time.time() - psutil.boot_time()
+                    up_hours = int(uptime_seconds // 3600)
+                    up_mins = int((uptime_seconds % 3600) // 60)
+                    
+                    ram_gb_used = round(ram.used / (1024**3), 1)
+                    ram_gb_total = round(ram.total / (1024**3), 1)
+                    disk_gb_used = round(disk.used / (1024**3), 0)
+                    disk_gb_total = round(disk.total / (1024**3), 0)
+                    
+                    sys_stats = (
+                        f"**CPU**: {cpu_usage}% | "
+                        f"**RAM**: {ram.percent}% ({ram_gb_used}/{ram_gb_total}G) | "
+                        f"**Disk**: {disk.percent}% ({int(disk_gb_used)}/{int(disk_gb_total)}G) | "
+                        f"**Up**: {up_hours}h {up_mins}m"
+                    )
 
                     fields.append({
                         "name": "💻 System Load",
