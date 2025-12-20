@@ -448,6 +448,8 @@ def main():
                         ports_sorted = sorted(list(group["ports"]), key=lambda x: int(x) if x.isdigit() else x)
                         ports_str = ", ".join(ports_sorted)
 
+                        ip_info = get_ip_info(remote_ip)
+
                         flags = []
                         if ip_info.get('mobile'): flags.append("📱")
                         if ip_info.get('proxy'): flags.append("🛡️")
