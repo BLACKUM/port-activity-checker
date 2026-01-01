@@ -375,11 +375,14 @@ class ProxyMonitor:
         self.last_status = "disconnected"
         self.connection_start_time = None
         
-        print(f"Initialized monitor for '{self.name}' (Docker: {self.container_name if self.container_name else 'No (Host)'}, Port: {self.socks_port})")
+        self.internal_port = proxy_config.get("internal_port", self.socks_port)
+        
+        print(f"Initialized monitor for '{self.name}' (Docker: {self.container_name if self.container_name else 'No (Host)'}, Port: {self.socks_port}, Internal: {self.internal_port})")
 
     def check(self, loop_time, debug=False):
         if self.container_name:
-            result = check_docker_connections(self.container_name, self.target_ports, self.socks_port, debug)
+            check_port = self.internal_port if self.internal_port else self.socks_port
+            result = check_docker_connections(self.container_name, self.target_ports, check_port, debug)
             if result[0] is None:
                 return
             active_connections, active_clients = result
@@ -417,13 +420,14 @@ class ProxyMonitor:
             hide_leaderboard = self.global_config.get("hide_leaderboard", False)
             anonymize_ips = self.global_config.get("anonymize_ips", False)
 
+            fields = []
+
             if current_status == "connected":
                 self.connection_start_time = datetime.now()
                 
                 unique_ports = sorted(list(set([c['port'] for c in active_connections])))
                 ports_str = ", ".join([str(p) for p in unique_ports])
                 
-                fields = []
                 fields.append({
                     "name": "🔌 Proxy / Container",
                     "value": f"**{self.name}**\n`{self.container_name if self.container_name else 'Host Mode'}`",
