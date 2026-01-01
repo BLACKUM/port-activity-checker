@@ -213,6 +213,13 @@ def get_formatted_duration(seconds):
         
     return " ".join(parts)
 
+def get_container_pid(container_name):
+    try:
+        cmd = f"docker inspect --format '{{{{.State.Pid}}}}' {container_name}"
+        output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode('utf-8').strip()
+        return output
+    except Exception:
+        return None
 
 def get_docker_netstat_output(container_name):
     try:
@@ -220,7 +227,16 @@ def get_docker_netstat_output(container_name):
         output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode('utf-8')
         return output.splitlines()
     except Exception:
-        return []
+        try:
+            pid = get_container_pid(container_name)
+            if pid:
+                cmd = f"nsenter -t {pid} -n netstat -tunap"
+                output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode('utf-8')
+                return output.splitlines()
+        except Exception as e:
+            print(f"[ERROR] Failed to run netstat via nsenter for {container_name}: {e}")
+    
+    return []
 
 def check_docker_connections(container_name, target_ports, socks_port=None, debug=False):
     found_connections = []
