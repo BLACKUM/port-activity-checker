@@ -1,7 +1,12 @@
 {
-    "socks_port": null,
-    "container_name": "",
-    "target_ports": [],
+    "proxies": [
+        {
+            "name": "Default Proxy",
+            "container_name": "",
+            "socks_port": null,
+            "target_ports": []
+        }
+    ],
     "webhook_url": "",
     "check_interval": 5,
     "leaderboard_show_country": false,

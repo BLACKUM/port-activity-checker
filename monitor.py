@@ -5,16 +5,20 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+import subprocess
 
 CONFIG_FILE = 'config.json'
 
 def load_config():
     default_config = {
-        "socks_port": None,
-        "container_name": "",
-        "target_ports": [],
-        "webhook_url": "",
-        "check_interval": 5,
+        "proxies": [
+            {
+                "name": "Default Proxy",
+                "container_name": "",
+                "socks_port": None,
+                "target_ports": []
+            }
+        ],
         "webhook_url": "",
         "check_interval": 5,
         "debug": False,
@@ -40,12 +44,17 @@ def load_config():
         with open(CONFIG_FILE, 'r') as f:
             config = json.load(f)
             
-        if config.get("socks_port") is None:
-            print(f"Error: 'socks_port' is not set or null in {CONFIG_FILE}.")
-            sys.exit(1)
-        if not config.get("target_ports"):
-             print(f"Error: 'target_ports' is empty in {CONFIG_FILE}.")
-             sys.exit(1)
+        if "proxies" not in config:
+            if "socks_port" in config:
+                print("Detected old config format. Converting in memory...")
+                old_proxy = {
+                    "name": config.get("container_name") or "Host Proxy",
+                    "container_name": config.get("container_name", ""),
+                    "socks_port": config.get("socks_port"),
+                    "target_ports": config.get("target_ports", [])
+                }
+                config["proxies"] = [old_proxy]
+
         if not config.get("webhook_url"):
             print(f"Error: 'webhook_url' is not set in {CONFIG_FILE}.")
             sys.exit(1)
@@ -204,7 +213,6 @@ def get_formatted_duration(seconds):
         
     return " ".join(parts)
 
-import subprocess
 
 def get_docker_netstat_output(container_name):
     try:
@@ -261,7 +269,7 @@ def check_docker_connections(container_name, target_ports, socks_port=None, debu
                 continue
 
             if debug:
-                 print(f"[DEBUG] Checking Candidate: Local={local_addr} Remote={remote_addr}")
+                 print(f"[DEBUG] [{container_name}] Checking Candidate: Local={local_addr} Remote={remote_addr}")
             
             try:
                 port_str = remote_addr.split(":")[-1]
@@ -301,10 +309,10 @@ def check_docker_connections(container_name, target_ports, socks_port=None, debu
                 if not exists:
                     found_connections.append(conn_details)
                     if debug:
-                        print(f"[DEBUG] Match! {conn_details}")
+                        print(f"[DEBUG] [{container_name}] Match! {conn_details}")
 
     except Exception as e:
-        print(f"Docker check failed: {e}")
+        print(f"Docker check failed for {container_name}: {e}")
         return None, None
         
     return found_connections, active_clients
@@ -320,7 +328,7 @@ def check_connections(socks_port, target_ports):
                 l_ip, l_port = conn.laddr.ip, conn.laddr.port
                 r_ip, r_port = (conn.raddr.ip, conn.raddr.port) if conn.raddr else (None, None)
                 
-                if l_port == int(socks_port) and r_ip:
+                if socks_port and l_port == int(socks_port) and r_ip:
                      client = f"{r_ip}:{r_port}"
                      if client not in active_clients:
                          active_clients.append(client)
@@ -352,332 +360,366 @@ def check_connections(socks_port, target_ports):
         
     return found_connections, active_clients
 
+class ProxyMonitor:
+    def __init__(self, proxy_config, global_config, stats_manager):
+        self.proxy_config = proxy_config
+        self.global_config = global_config
+        self.stats_manager = stats_manager
+        
+        self.name = proxy_config.get("name", "Unnamed Proxy")
+        self.container_name = proxy_config.get("container_name", "")
+        self.socks_port = proxy_config.get("socks_port")
+        self.target_ports = proxy_config.get("target_ports", [])
+        
+        self.client_sessions = {}
+        self.last_status = "disconnected"
+        self.connection_start_time = None
+        
+        print(f"Initialized monitor for '{self.name}' (Docker: {self.container_name if self.container_name else 'No (Host)'}, Port: {self.socks_port})")
+
+    def check(self, loop_time, debug=False):
+        if self.container_name:
+            result = check_docker_connections(self.container_name, self.target_ports, self.socks_port, debug)
+            if result[0] is None:
+                return
+            active_connections, active_clients = result
+        else:
+            active_connections, active_clients = check_connections(self.socks_port, self.target_ports)
+
+        current_client_ips = set()
+        for client in active_clients:
+            ip = client.split(':')[0] if ':' in client else client
+            current_client_ips.add(ip)
+        
+        active_tracked_ips = set(self.client_sessions.keys())
+        
+        new_ips = current_client_ips - active_tracked_ips
+        for ip in new_ips:
+            self.client_sessions[ip] = loop_time
+        
+        left_ips = active_tracked_ips - current_client_ips
+        for ip in left_ips:
+            start_time = self.client_sessions.pop(ip)
+            duration = (loop_time - start_time).total_seconds()
+            print(f"[DEBUG][{self.name}] Client disconnected: {ip}. Session duration: {duration}s")
+            self.stats_manager.update_client(ip, duration)
+            if debug:
+                print(f"[DEBUG][{self.name}] Client IP {ip} disconnected. Duration: {duration}s")
+
+        target_active = len(active_connections) > 0
+        current_status = "connected" if target_active else "disconnected"
+        
+        if current_status != self.last_status:
+            webhook_url = self.global_config["webhook_url"]
+            hide_target_info = self.global_config.get("hide_target_info", False)
+            hide_client_info = self.global_config.get("hide_client_info", False)
+            hide_system_info = self.global_config.get("hide_system_info", False)
+            hide_leaderboard = self.global_config.get("hide_leaderboard", False)
+            anonymize_ips = self.global_config.get("anonymize_ips", False)
+
+            if current_status == "connected":
+                self.connection_start_time = datetime.now()
+                
+                unique_ports = sorted(list(set([c['port'] for c in active_connections])))
+                ports_str = ", ".join([str(p) for p in unique_ports])
+                
+                fields = []
+                fields.append({
+                    "name": "🔌 Proxy / Container",
+                    "value": f"**{self.name}**\n`{self.container_name if self.container_name else 'Host Mode'}`",
+                    "inline": False
+                })
+
+                target_groups = {}
+                for conn in active_connections:
+                    remote_ip = conn['remote']
+                    if ':' in remote_ip:
+                        remote_ip = remote_ip.rsplit(':', 1)[0]
+                    
+                    if remote_ip not in target_groups:
+                        target_groups[remote_ip] = {
+                            "ports": set()
+                        }
+                    
+                    target_groups[remote_ip]["ports"].add(str(conn['port']))
+
+                if not hide_target_info:
+                    for i, remote_ip in enumerate(list(target_groups.keys())[:5]):
+                        group = target_groups[remote_ip]
+                        ports_sorted = sorted(list(group["ports"]), key=lambda x: int(x) if x.isdigit() else x)
+                        ports_str = ", ".join(ports_sorted)
+
+                        ip_info = get_ip_info(remote_ip)
+
+                        flags = []
+                        if ip_info.get('mobile'): flags.append("📱")
+                        if ip_info.get('proxy'): flags.append("🛡️")
+                        if ip_info.get('hosting'): flags.append("☁️")
+                        flag_str = " ".join(flags)
+
+                        loc_parts = []
+                        if ip_info.get('city'): loc_parts.append(ip_info['city'])
+                        if ip_info.get('regionName'): loc_parts.append(ip_info['regionName'])
+                        if ip_info.get('country'): loc_parts.append(ip_info['country'])
+                        if ip_info.get('zip'): loc_parts.append(ip_info['zip'])
+                        loc_str = ", ".join(loc_parts)
+
+                        net_parts = []
+                        if ip_info.get('as'): net_parts.append(ip_info['as']) 
+                        if ip_info.get('isp'): net_parts.append(ip_info['isp'])
+                        net_str = " | ".join(net_parts)
+
+                        dns_part = ip_info.get('reverse', '')
+                        
+                        map_url = ""
+                        if ip_info.get('lat') and ip_info.get('lon'):
+                            map_url = f" | [Map](https://www.google.com/maps/search/?api=1&query={ip_info['lat']},{ip_info['lon']})"
+
+                        lines = [
+                            f"**IP**: `{remote_ip}`{map_url} {flag_str}",
+                            f"**Ports**: `{ports_str}`",
+                            f"**Location**: {loc_str}",
+                            f"**Network**: {net_str}"
+                        ]
+                        if dns_part:
+                            lines.append(f"**DNS**: `{dns_part}`")
+
+                        value_str = "\n".join(lines)
+
+                        fields.append({
+                            "name": f"🌍 Target Connection #{i+1}",
+                            "value": value_str,
+                            "inline": True
+                        })
+                
+                client_groups = {}
+                for c in active_clients:
+                    c_ip = c
+                    c_port = "?"
+                    if ':' in c:
+                        parts = c.rsplit(':', 1)
+                        c_ip = parts[0]
+                        c_port = parts[1]
+                    
+                    if c_ip not in client_groups:
+                        client_groups[c_ip] = []
+                    client_groups[c_ip].append(c_port)
+
+                if hide_client_info:
+                    for i, c_ip in enumerate(list(client_groups.keys())[:5]):
+                        ip_info = get_ip_info(c_ip)
+                        country = ip_info.get('country', 'Unknown')
+                        
+                        fields.append({
+                            "name": f"👤 Proxy Client #{i+1}",
+                            "value": f"**IP**: *Hidden* 🔒\n**Location**: {country}",
+                            "inline": True
+                        })
+                    
+                    if not client_groups:
+                        pass
+
+                else:
+                    for i, c_ip in enumerate(list(client_groups.keys())[:5]):
+                        ports = sorted(client_groups[c_ip])
+                        ports_str = ", ".join(ports)
+                        
+                        display_ip = c_ip
+                        if anonymize_ips:
+                            parts = c_ip.split('.')
+                            if len(parts) == 4:
+                                display_ip = f"{parts[0]}.{parts[1]}.{parts[2]}.xxx"
+                            elif ":" in c_ip:
+                                    display_ip = "xxxx:..."
+
+                        ip_info = get_ip_info(c_ip)
+                        
+                        p_flags = []
+                        if ip_info.get('mobile'): p_flags.append("📱")
+                        if ip_info.get('proxy'): p_flags.append("🛡️")
+                        if ip_info.get('hosting'): p_flags.append("☁️")
+                        p_flag_str = " ".join(p_flags)
+                        
+                        loc_parts = []
+                        if ip_info.get('city'): loc_parts.append(ip_info['city'])
+                        if ip_info.get('regionName'): loc_parts.append(ip_info['regionName'])
+                        if ip_info.get('country'): loc_parts.append(ip_info['country'])
+                        if ip_info.get('zip'): loc_parts.append(ip_info['zip'])
+                        loc_str = ", ".join(loc_parts)
+
+                        net_parts = []
+                        if ip_info.get('as'): net_parts.append(ip_info['as']) 
+                        if ip_info.get('isp'): net_parts.append(ip_info['isp'])
+                        net_str = " | ".join(net_parts)
+
+                        dns_part = ip_info.get('reverse', '')
+
+                        map_url = ""
+                        if ip_info.get('lat') and ip_info.get('lon'):
+                            map_url = f" | [Map](https://www.google.com/maps/search/?api=1&query={ip_info['lat']},{ip_info['lon']})"
+
+                        lines = [
+                            f"**IP**: `{display_ip}`{map_url} {p_flag_str}",
+                            f"**Ports**: `{ports_str}`",
+                            f"**Location**: {loc_str}",
+                            f"**Network**: {net_str}"
+                        ]
+                        if dns_part:
+                            lines.append(f"**DNS**: `{dns_part}`")
+                        
+                        value_str = "\n".join(lines)
+                        
+                        fields.append({
+                            "name": f"👤 Proxy Client #{i+1}",
+                            "value": value_str,
+                            "inline": True
+                        })
+                
+                if not client_groups:
+                        fields.append({
+                        "name": "👤 Proxy Client",
+                        "value": "No direct SOCKS clients found.",
+                        "inline": False
+                    })
+                
+                cpu_usage = psutil.cpu_percent()
+                ram = psutil.virtual_memory()
+                disk = psutil.disk_usage('/')
+                
+                uptime_seconds = time.time() - psutil.boot_time()
+                up_hours = int(uptime_seconds // 3600)
+                up_mins = int((uptime_seconds % 3600) // 60)
+                
+                ram_gb_used = round(ram.used / (1024**3), 1)
+                ram_gb_total = round(ram.total / (1024**3), 1)
+                disk_gb_used = round(disk.used / (1024**3), 0)
+                disk_gb_total = round(disk.total / (1024**3), 0)
+                
+                sys_stats = (
+                    f"**CPU**: {cpu_usage}% | **RAM**: {ram.percent}% ({ram_gb_used}/{ram_gb_total}G)\n"
+                    f"**Disk**: {disk.percent}% ({int(disk_gb_used)}/{int(disk_gb_total)}G)\n"
+                    f"**Uptime**: {up_hours}h {up_mins}m"
+                )
+
+                if not hide_system_info:
+                    fields.append({
+                        "name": "💻 System Load",
+                        "value": sys_stats,
+                        "inline": False
+                    })
+
+                unique_ports_msg = sorted(list(set([c['port'] for c in active_connections])))
+                ports_msg_str = ", ".join([str(p) for p in unique_ports_msg])
+                msg = f"Detected traffic to **{ports_msg_str}** on **{self.name}**"
+                print(f"🟢 [{self.name}] Connected: {ports_msg_str} | Clients: {active_clients}")
+                
+                title = f"🟢 [{self.name}] Connection Established"
+                send_discord_webhook(webhook_url, title, msg, fields, 0x00ff00)
+            else:
+                duration_str = "Unknown"
+                if self.connection_start_time:
+                    duration_seconds = (datetime.now() - self.connection_start_time).total_seconds()
+                    duration_str = get_formatted_duration(duration_seconds)
+                
+                print(f"🔴 [{self.name}] Disconnected. Duration: {duration_str}")
+
+                flush_time = datetime.now()
+                for ip, start_time in self.client_sessions.items():
+                    session_dur = (flush_time - start_time).total_seconds()
+                    if session_dur > 0:
+                        print(f"[DEBUG][{self.name}] Flushing session for {ip}. Duration: {session_dur}s")
+                        self.stats_manager.update_client(ip, session_dur)
+                        self.client_sessions[ip] = flush_time
+                
+                fields.append({
+                    "name": "🔌 Proxy / Container",
+                    "value": f"**{self.name}**\n`{self.container_name if self.container_name else 'Host Mode'}`",
+                    "inline": False
+                })
+
+                show_country = self.global_config.get("leaderboard_show_country", False)
+                lb_text = ""
+
+                if show_country:
+                    country_stats = {}
+                    for ip, data in self.stats_manager.stats.items():
+                        info = get_ip_info(ip)
+                        country = info.get("country", "Unknown")
+                        current_total = country_stats.get(country, 0)
+                        country_stats[country] = current_total + data.get("total_duration", 0)
+                    
+                    sorted_countries = sorted(
+                        country_stats.items(),
+                        key=lambda item: item[1],
+                        reverse=True
+                    )[:5]
+                    
+                    for idx, (country, total_duration) in enumerate(sorted_countries):
+                        dur_str = get_formatted_duration(total_duration)
+                        lb_text += f"**{idx+1}.** `{country}` - ⏳ {dur_str}\n"
+                else:
+                    leaderboard = self.stats_manager.get_leaderboard()
+                    for idx, (ip, data) in enumerate(leaderboard):
+                        dur_str = get_formatted_duration(data['total_duration'])
+                        lb_text += f"**{idx+1}.** `{ip}` - ⏳ {dur_str}\n"
+
+                if lb_text and not hide_leaderboard:
+                    fields.append({
+                        "name": "🏆 Top Clients (Total Time)",
+                        "value": lb_text,
+                        "inline": False
+                    })
+                
+                title = f"🔴 [{self.name}] Disconnected"
+                send_discord_webhook(webhook_url, title, f"Traffic to target has stopped.\n**Duration**: `{duration_str}`", fields, 0xff0000)
+                self.connection_start_time = None
+            
+            self.last_status = current_status
+
+    def flush_sessions(self):
+        print(f"[{self.name}] Saving active sessions...")
+        for ip, start_time in self.client_sessions.items():
+            duration = (datetime.now() - start_time).total_seconds()
+            self.stats_manager.update_client(ip, duration)
+            print(f"[{self.name}] Saved stats for {ip}")
+
+
 def main():
-    print("Starting SOCKS5 Monitor...")
+    print("Starting SOCKS5 Monitor (Multi-Proxy Support)...")
     load_ip_cache()
     config = load_config()
     
-    socks_port = config["socks_port"]
-    container_name = config.get("container_name", "")
-    target_ports = config["target_ports"]
-    webhook_url = config["webhook_url"]
     interval = config.get("check_interval", 5)
     debug = config.get("debug", False)
-    hide_client_info = config.get("hide_client_info", False)
-    hide_target_info = config.get("hide_target_info", False)
-    hide_system_info = config.get("hide_system_info", False)
-    hide_leaderboard = config.get("hide_leaderboard", False)
-    anonymize_ips = config.get("anonymize_ips", False)
     
-    if container_name:
-        print(f"Monitoring Docker Container: {container_name}")
-    else:
-        print(f"Monitoring SOCKS port: {socks_port} (Host Mode)")
-        
-    print(f"Target ports: {target_ports}")
-    if debug:
-        print("Debug mode enabled: Printing all established connections found.")
-    
-    if container_name:
-        print(f"\n[INFO] Current connections in container '{container_name}':")
-        try:
-            cmd = f"docker exec {container_name} netstat -tunap"
-            output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode('utf-8')
-            print(output)
-            print("-" * 50)
-        except Exception as e:
-            print(f"Failed to list initial connections: {e}")
-
     stats_manager = StatsManager()
-    client_sessions = {}
-    last_status = "disconnected"
-    connection_start_time = None
-
+    
+    proxies_config = config.get("proxies", [])
+    monitors = []
+    
+    for p_conf in proxies_config:
+        m = ProxyMonitor(p_conf, config, stats_manager)
+        monitors.append(m)
+        
+    if not monitors:
+        print("[WARN] No proxies configured.")
+    
+    if debug:
+        print("Debug mode enabled.")
+    
     try:
         while True:
             loop_time = datetime.now()
             
-            if container_name:
-                result = check_docker_connections(container_name, target_ports, socks_port, debug)
-                if result[0] is None:
-                    time.sleep(1)
-                    continue
-                active_connections, active_clients = result
-            else:
-                active_connections, active_clients = check_connections(socks_port, target_ports)
-
-            current_client_ips = set()
-            for client in active_clients:
-                ip = client.split(':')[0] if ':' in client else client
-                current_client_ips.add(ip)
-            
-            active_tracked_ips = set(client_sessions.keys())
-            
-            new_ips = current_client_ips - active_tracked_ips
-            for ip in new_ips:
-                client_sessions[ip] = loop_time
-            
-            left_ips = active_tracked_ips - current_client_ips
-            for ip in left_ips:
-                start_time = client_sessions.pop(ip)
-                duration = (loop_time - start_time).total_seconds()
-                print(f"[DEBUG] Client disconnected: {ip}. Session duration: {duration}s")
-                stats_manager.update_client(ip, duration)
-                if debug:
-                    print(f"[DEBUG] Client IP {ip} disconnected. Duration: {duration}s")
-
-
-            target_active = len(active_connections) > 0
-            
-            current_status = "connected" if target_active else "disconnected"
-            
-            if current_status != last_status:
-                if current_status == "connected":
-                    connection_start_time = datetime.now()
-                    
-                    unique_ports = sorted(list(set([c['port'] for c in active_connections])))
-                    ports_str = ", ".join([str(p) for p in unique_ports])
-                    
-                    fields = []
-                    target_groups = {}
-                    for conn in active_connections:
-                        remote_ip = conn['remote']
-                        if ':' in remote_ip:
-                            remote_ip = remote_ip.rsplit(':', 1)[0]
-                        
-                        if remote_ip not in target_groups:
-                            target_groups[remote_ip] = {
-                                "ports": set()
-                            }
-                        
-                        target_groups[remote_ip]["ports"].add(str(conn['port']))
-
-                    fields = []
-                    if not hide_target_info:
-                        for i, remote_ip in enumerate(list(target_groups.keys())[:5]):
-                            group = target_groups[remote_ip]
-                            ports_sorted = sorted(list(group["ports"]), key=lambda x: int(x) if x.isdigit() else x)
-                            ports_str = ", ".join(ports_sorted)
-
-                            ip_info = get_ip_info(remote_ip)
-
-                            flags = []
-                            if ip_info.get('mobile'): flags.append("📱")
-                            if ip_info.get('proxy'): flags.append("🛡️")
-                            if ip_info.get('hosting'): flags.append("☁️")
-                            flag_str = " ".join(flags)
-
-                            loc_parts = []
-                            if ip_info.get('city'): loc_parts.append(ip_info['city'])
-                            if ip_info.get('regionName'): loc_parts.append(ip_info['regionName'])
-                            if ip_info.get('country'): loc_parts.append(ip_info['country'])
-                            if ip_info.get('zip'): loc_parts.append(ip_info['zip'])
-                            loc_str = ", ".join(loc_parts)
-
-                            net_parts = []
-                            if ip_info.get('as'): net_parts.append(ip_info['as']) 
-                            if ip_info.get('isp'): net_parts.append(ip_info['isp'])
-                            net_str = " | ".join(net_parts)
-
-                            dns_part = ip_info.get('reverse', '')
-                            
-                            map_url = ""
-                            if ip_info.get('lat') and ip_info.get('lon'):
-                                map_url = f" | [Map](https://www.google.com/maps/search/?api=1&query={ip_info['lat']},{ip_info['lon']})"
-
-                            lines = [
-                                f"**IP**: `{remote_ip}`{map_url} {flag_str}",
-                                f"**Ports**: `{ports_str}`",
-                                f"**Location**: {loc_str}",
-                                f"**Network**: {net_str}"
-                            ]
-                            if dns_part:
-                                lines.append(f"**DNS**: `{dns_part}`")
-
-                            value_str = "\n".join(lines)
-
-                            fields.append({
-                                "name": f"🌍 Target Connection #{i+1}",
-                                "value": value_str,
-                                "inline": True
-                            })
-                    
-                    client_groups = {}
-                    for c in active_clients:
-                        c_ip = c
-                        c_port = "?"
-                        if ':' in c:
-                            parts = c.rsplit(':', 1)
-                            c_ip = parts[0]
-                            c_port = parts[1]
-                        
-                        if c_ip not in client_groups:
-                            client_groups[c_ip] = []
-                        client_groups[c_ip].append(c_port)
-
-                    client_list_items = []
-                    if hide_client_info:
-                        fields.append({
-                            "name": "👤 Proxy Client",
-                            "value": "Hidden (Privacy Mode Enabled)",
-                            "inline": False
-                        })
-                    else:
-                        for i, c_ip in enumerate(list(client_groups.keys())[:5]):
-                            ports = sorted(client_groups[c_ip])
-                            ports_str = ", ".join(ports)
-                            
-                            display_ip = c_ip
-                            if anonymize_ips:
-                                parts = c_ip.split('.')
-                                if len(parts) == 4:
-                                    display_ip = f"{parts[0]}.{parts[1]}.{parts[2]}.xxx"
-                                elif ":" in c_ip:
-                                     display_ip = "xxxx:..."
-
-                            ip_info = get_ip_info(c_ip)
-                            
-                            p_flags = []
-                            if ip_info.get('mobile'): p_flags.append("📱")
-                            if ip_info.get('proxy'): p_flags.append("🛡️")
-                            if ip_info.get('hosting'): p_flags.append("☁️")
-                            p_flag_str = " ".join(p_flags)
-                            
-                            loc_parts = []
-                            if ip_info.get('city'): loc_parts.append(ip_info['city'])
-                            if ip_info.get('regionName'): loc_parts.append(ip_info['regionName'])
-                            if ip_info.get('country'): loc_parts.append(ip_info['country'])
-                            if ip_info.get('zip'): loc_parts.append(ip_info['zip'])
-                            loc_str = ", ".join(loc_parts)
-
-                            net_parts = []
-                            if ip_info.get('as'): net_parts.append(ip_info['as']) 
-                            if ip_info.get('isp'): net_parts.append(ip_info['isp'])
-                            net_str = " | ".join(net_parts)
-
-                            dns_part = ip_info.get('reverse', '')
-
-                            map_url = ""
-                            if ip_info.get('lat') and ip_info.get('lon'):
-                                map_url = f" | [Map](https://www.google.com/maps/search/?api=1&query={ip_info['lat']},{ip_info['lon']})"
-
-                            lines = [
-                                f"**IP**: `{display_ip}`{map_url} {p_flag_str}",
-                                f"**Ports**: `{ports_str}`",
-                                f"**Location**: {loc_str}",
-                                f"**Network**: {net_str}"
-                            ]
-                            if dns_part:
-                                lines.append(f"**DNS**: `{dns_part}`")
-                            
-                            value_str = "\n".join(lines)
-                            
-                            fields.append({
-                                "name": f"👤 Proxy Client #{i+1}",
-                                "value": value_str,
-                                "inline": True
-                            })
-                    
-                    if not client_groups:
-                         fields.append({
-                            "name": "👤 Proxy Client",
-                            "value": "No direct SOCKS clients found.",
-                            "inline": False
-                        })
-                    
-                    cpu_usage = psutil.cpu_percent()
-                    ram = psutil.virtual_memory()
-                    disk = psutil.disk_usage('/')
-                    
-                    uptime_seconds = time.time() - psutil.boot_time()
-                    up_hours = int(uptime_seconds // 3600)
-                    up_mins = int((uptime_seconds % 3600) // 60)
-                    
-                    ram_gb_used = round(ram.used / (1024**3), 1)
-                    ram_gb_total = round(ram.total / (1024**3), 1)
-                    disk_gb_used = round(disk.used / (1024**3), 0)
-                    disk_gb_total = round(disk.total / (1024**3), 0)
-                    
-                    sys_stats = (
-                        f"**CPU**: {cpu_usage}% | **RAM**: {ram.percent}% ({ram_gb_used}/{ram_gb_total}G)\n"
-                        f"**Disk**: {disk.percent}% ({int(disk_gb_used)}/{int(disk_gb_total)}G)\n"
-                        f"**Uptime**: {up_hours}h {up_mins}m"
-                    )
-
-                    if not hide_system_info:
-                        fields.append({
-                            "name": "💻 System Load",
-                            "value": sys_stats,
-                            "inline": False
-                        })
-
-                    msg = f"Detected traffic to **{ports_str}**"
-                    print(f"🟢 Connected: {ports_str} | Clients: {active_clients}")
-                    send_discord_webhook(webhook_url, "🟢 Connection Established", msg, fields, 0x00ff00)
-                else:
-                    duration_str = "Unknown"
-                    if connection_start_time:
-                        duration_seconds = (datetime.now() - connection_start_time).total_seconds()
-                        duration_str = get_formatted_duration(duration_seconds)
-                    
-                    print(f"🔴 Disconnected. Duration: {duration_str}")
-
-                    flush_time = datetime.now()
-                    for ip, start_time in client_sessions.items():
-                        session_dur = (flush_time - start_time).total_seconds()
-                        if session_dur > 0:
-                            print(f"[DEBUG] Flushing session for {ip}. Duration: {session_dur}s")
-                            stats_manager.update_client(ip, session_dur)
-                            client_sessions[ip] = flush_time
-                    
-                    
-                    show_country = config.get("leaderboard_show_country", False)
-                    lb_text = ""
-
-                    if show_country:
-                        country_stats = {}
-                        for ip, data in stats_manager.stats.items():
-                            info = get_ip_info(ip)
-                            country = info.get("country", "Unknown")
-                            current_total = country_stats.get(country, 0)
-                            country_stats[country] = current_total + data.get("total_duration", 0)
-                        
-                        sorted_countries = sorted(
-                            country_stats.items(),
-                            key=lambda item: item[1],
-                            reverse=True
-                        )[:5]
-                        
-                        for idx, (country, total_duration) in enumerate(sorted_countries):
-                            dur_str = get_formatted_duration(total_duration)
-                            lb_text += f"**{idx+1}.** `{country}` - ⏳ {dur_str}\n"
-                    else:
-                        leaderboard = stats_manager.get_leaderboard()
-                        for idx, (ip, data) in enumerate(leaderboard):
-                            dur_str = get_formatted_duration(data['total_duration'])
-                            lb_text += f"**{idx+1}.** `{ip}` - ⏳ {dur_str}\n"
-
-                    if lb_text and not hide_leaderboard:
-                        fields.append({
-                            "name": "🏆 Top Clients (Total Time)",
-                            "value": lb_text,
-                            "inline": False
-                        })
-
-                    send_discord_webhook(webhook_url, "🔴 Disconnected", f"Traffic to target has stopped.\n**Duration**: `{duration_str}`", fields, 0xff0000)
-                    connection_start_time = None
-                
-                last_status = current_status
+            for monitor in monitors:
+                monitor.check(loop_time, debug)
             
             time.sleep(interval)
             
     except KeyboardInterrupt:
         print("\nStopping monitor...")
-        print("Saving active sessions...")
-        for ip, start_time in client_sessions.items():
-            duration = (datetime.now() - start_time).total_seconds()
-            stats_manager.update_client(ip, duration)
-            print(f"Saved stats for {ip}")
+        for monitor in monitors:
+            monitor.flush_sessions()
 
 if __name__ == "__main__":
     main()
