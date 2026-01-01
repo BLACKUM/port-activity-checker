@@ -67,7 +67,7 @@ def load_config():
         print(f"Error loading config: {e}")
         sys.exit(1)
 
-def send_discord_webhook(url, title, description, fields=[], color=0x00ff00):
+def send_discord_webhook(url, title, description, fields=[], color=0x00ff00, footer_text=None):
     embed = {
         "title": title,
         "description": description,
@@ -75,6 +75,9 @@ def send_discord_webhook(url, title, description, fields=[], color=0x00ff00):
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "fields": fields
     }
+    
+    if footer_text:
+        embed["footer"] = {"text": footer_text}
     
     data = {
         "embeds": [embed]
@@ -444,11 +447,6 @@ class ProxyMonitor:
                 unique_ports = sorted(list(set([c['port'] for c in active_connections])))
                 ports_str = ", ".join([str(p) for p in unique_ports])
                 
-                fields.append({
-                    "name": "🔌 Proxy / Container",
-                    "value": f"**{self.name}**\n`{self.container_name if self.container_name else 'Host Mode'}`",
-                    "inline": False
-                })
 
                 target_groups = {}
                 for conn in active_connections:
@@ -630,11 +628,12 @@ class ProxyMonitor:
 
                 unique_ports_msg = sorted(list(set([c['port'] for c in active_connections])))
                 ports_msg_str = ", ".join([str(p) for p in unique_ports_msg])
-                msg = f"Detected traffic to **{ports_msg_str}** on **{self.name}**"
+                msg = f"Detected traffic to **{ports_msg_str}**"
                 print(f"🟢 [{self.name}] Connected: {ports_msg_str} | Clients: {active_clients}")
                 
                 title = f"🟢 [{self.name}] Connection Established"
-                send_discord_webhook(webhook_url, title, msg, fields, 0x00ff00)
+                footer = f"Container: {self.container_name}" if self.container_name else "Mode: Host"
+                send_discord_webhook(webhook_url, title, msg, fields, 0x00ff00, footer_text=footer)
             else:
                 duration_str = "Unknown"
                 if self.connection_start_time:
@@ -651,11 +650,6 @@ class ProxyMonitor:
                         self.stats_manager.update_client(ip, session_dur)
                         self.client_sessions[ip] = flush_time
                 
-                fields.append({
-                    "name": "🔌 Proxy / Container",
-                    "value": f"**{self.name}**\n`{self.container_name if self.container_name else 'Host Mode'}`",
-                    "inline": False
-                })
 
                 show_country = self.global_config.get("leaderboard_show_country", False)
                 lb_text = ""
@@ -691,7 +685,8 @@ class ProxyMonitor:
                     })
                 
                 title = f"🔴 [{self.name}] Disconnected"
-                send_discord_webhook(webhook_url, title, f"Traffic to target has stopped.\n**Duration**: `{duration_str}`", fields, 0xff0000)
+                footer = f"Container: {self.container_name}" if self.container_name else "Mode: Host"
+                send_discord_webhook(webhook_url, title, f"Traffic to target has stopped.\n**Duration**: `{duration_str}`", fields, 0xff0000, footer_text=footer)
                 self.connection_start_time = None
             
             self.last_status = current_status
